@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="ASCII"?>
 <model:MDescriptors xmlns:model="http://www.silabs.com/ss/Studio.ecore">
-  <descriptors name="bt_soc_empty_20240410">
+  <descriptors name="Creed_DBS_app">
     <properties key="projectCommon.sdkId" value="com.silabs.sdk.stack.super:4.4.1._1474747510"/>
     <properties key="universalConfig.relativeWorkspacePath" value="../bt_soc_empty_20240410.slcw"/>
     <properties key="universalConfig.generationDirectory" value=""/>

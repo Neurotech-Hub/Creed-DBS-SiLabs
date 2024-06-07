@@ -1,0 +1,6 @@
+---
+label: "bt_soc_empty_20240410"
+project:
+- id: "main"
+  path: "Creed_DBS_app.slcp"
+  output: "."

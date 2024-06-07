@@ -1,6 +1,6 @@
 # Silicon Labs Project Configuration Tools: slcp, v0, Component selection file.
-project_name: bt_soc_empty_20240410
-label: bt_soc_empty_20240410
+project_name: Creed_DBS_app
+label: Creed_DBS_app
 description: |
   A minimal project structure, that serves as a starting point for custom Bluetooth applications. The application starts advertising after boot and restarts advertising after a connection is closed.
 category: Bluetooth Examples
