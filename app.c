@@ -33,6 +33,7 @@
 #define OP_AMP_INIT_TICKS	4
 #define STIM_OFFSET_US 93 // empirical
 #define CHARGE_BALANCE_OFFSET_US 36 // empirical
+#define ADV_INTERVAL_MS 2000
 sl_sleeptimer_timer_handle_t timer_stimulation; // based on frequency
 sl_sleeptimer_timer_handle_t timer_pulse; // based on amplitude
 sl_sleeptimer_timer_handle_t timer_charge_balance; // balance amplitude
@@ -366,12 +367,17 @@ SL_WEAK void app_process_action(void) {
  *****************************************************************************/
 void sl_bt_on_event(sl_bt_msg_t *evt) {
 	sl_status_t sc;
+	int16_t pwr_min, pwr_max;
 
 	switch (SL_BT_MSG_ID(evt->header)) {
 	// -------------------------------
 	// This event indicates the device has started and the radio is ready.
 	// Do not call any stack command before receiving this boot event!
 	case sl_bt_evt_system_boot_id:
+		// Set TX power to reasonable level
+		sc = sl_bt_system_set_tx_power(0, 0, &pwr_min, &pwr_max);
+		app_assert_status(sc);
+
 		// Create an advertising set.
 		sc = sl_bt_advertiser_create_set(&advertising_set_handle);
 		app_assert_status(sc);
@@ -382,8 +388,9 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
 		app_assert_status(sc);
 
 		// Set advertising interval to 100ms.
-		sc = sl_bt_advertiser_set_timing(advertising_set_handle, 1000, // min. adv. interval (milliseconds * 1.6)
-				1000, // max. adv. interval (milliseconds * 1.6)
+		sc = sl_bt_advertiser_set_timing(advertising_set_handle,
+				ADV_INTERVAL_MS, // min. adv. interval (milliseconds * 1.6)
+				ADV_INTERVAL_MS, // max. adv. interval (milliseconds * 1.6)
 				0,   // adv. duration
 				0);  // max. num. adv. events
 		app_assert_status(sc);
