@@ -334,6 +334,7 @@ SL_WEAK void app_init(void) {
 	// Put your additional application init code here!                         //
 	// This is called once during start-up.                                    //
 	/////////////////////////////////////////////////////////////////////////////
+	sl_led_turn_on(LED0);
 	GPIO_PinModeSet(SHDN_PORT, SHDN_PIN, gpioModePushPull, 0);
 //	GPIO_PinModeSet(MAG_PORT, MAG_PIN, gpioModeInputPull, 1);
 	GPIO_PinModeSet(ELEC0_OUT_PORT, ELEC0_OUT_PIN, gpioModePushPull, 0);
@@ -346,6 +347,7 @@ SL_WEAK void app_init(void) {
 	pulse_duration = read_pulse_duration();
 
 	spidrv_app_init();
+	sl_led_turn_off(LED0);
 }
 
 /**************************************************************************//**
