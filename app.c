@@ -13,14 +13,16 @@
 #include "sl_simple_led.h"
 #include "sl_simple_led_instances.h"
 #include "sl_sleeptimer.h"
-
-#include "em_common.h"
-#include "app_assert.h"
 #include "sl_bluetooth.h"
+
+#include "em_cmu.h"
+#include "em_timer.h"
+#include "em_common.h"
+#include "em_emu.h"
+#include "app_assert.h"
 #include "gatt_db.h"
 #include "app.h"
 #include "pin_config.h"
-//#include "em_gpio.h"
 
 #include "spidrv.h"
 #include "sl_spidrv_instances.h"
@@ -28,8 +30,15 @@
 #include "nvm3.h"
 #include "nvm3_default.h"
 
+// TIMING
+#define OP_AMP_SETTLE 100 // µs
+#define ADV_INTERVAL_MS 1000
+sl_sleeptimer_timer_handle_t timer_stimulation; // based on frequency
+sl_sleeptimer_timer_handle_t timer_pulse; // based on amplitude
+sl_sleeptimer_timer_handle_t timer_charge_balance; // balance amplitude
+
 // STIM
-#define CHARGE_BALANCE_RATIO 5
+#define CHARGE_BALANCE_RATIO 1
 
 // HARDWARE
 #define LED0	(&sl_led_inst)
@@ -76,20 +85,13 @@ void delay_microseconds(uint32_t us);
 #define TOGGLE_DELAY_MS 100
 #define APP_BUFFER_SIZE 3
 
-sl_sleeptimer_timer_handle_t timer_blink;
-sl_sleeptimer_timer_handle_t timer_stimulation; // based on frequency
-sl_sleeptimer_timer_handle_t timer_pulse; // based on amplitude
-sl_sleeptimer_timer_handle_t timer_charge_balance; // balance amplitude
-
-bool toggle_blink_timeout = false;
-bool should_blink = false; // Global flag to control blinking
 bool transfer_complete = false; // Flag for SPI transfer completion
 bool spi_transfer_pending = false; // Flag for pending SPI transfer
 
 uint8_t tx_buffer[APP_BUFFER_SIZE];
 uint8_t rx_buffer[APP_BUFFER_SIZE];
 
-extern uint32_t sl_sleeptimer_get_timer_frequency(void);
+//extern uint32_t sl_sleeptimer_get_timer_frequency(void);
 
 void nvm3_init(void) {
 	Ecode_t result = nvm3_initDefault();
@@ -198,18 +200,12 @@ void transfer_callback(SPIDRV_HandleData_t *handle, Ecode_t transfer_status,
 	}
 }
 
-void spidrv_app_init(void) {
-	setTxBufferGain();
-	setTxBufferVolts(refVolts);
-}
-
 void setTxBufferGain(void) {
 	// gain x2, internal ref off
 	tx_buffer[0] = 0x41;
 	tx_buffer[1] = 0x80;
 	tx_buffer[2] = 0x00;
 	transferTxBuffer();
-//	spi_transfer_pending = true;
 }
 
 void setTxBufferVolts(float outputVolts) {
@@ -219,7 +215,6 @@ void setTxBufferVolts(float outputVolts) {
 	tx_buffer[1] = (ADC_bits >> 4) & 0xFF;       // Middle 8 bits of ADC_bits
 	tx_buffer[2] = (ADC_bits << 4) & 0xF0; // Last 4 bits of ADC_bits shifted to the top, lower 4 bits are 0
 	transferTxBuffer();
-//	spi_transfer_pending = true;
 }
 
 void transferTxBuffer(void) {
@@ -230,17 +225,45 @@ void transferTxBuffer(void) {
 	EFM_ASSERT(ecode == ECODE_OK);
 }
 
-void delay_microseconds(uint32_t us) {
-	// Convert microseconds to timer ticks
-	uint32_t ticks = (us * sl_sleeptimer_get_timer_frequency()) / 1000000;
+void init_timer(void) {
+	// Enable clock for TIMER0
+	CMU_ClockEnable(cmuClock_TIMER0, true);
 
-	// Get the current tick count
-	uint32_t start_tick = sl_sleeptimer_get_tick_count();
+	// Configure TIMER0 for one-shot mode with prescaler
+	TIMER_Init_TypeDef timerInit = TIMER_INIT_DEFAULT;
+	timerInit.enable = false;
+	timerInit.oneShot = true;
+	timerInit.prescale = timerPrescale1;
 
-	// Wait until the specified number of ticks have passed
-	while ((sl_sleeptimer_get_tick_count() - start_tick) < ticks) {
-		// Do nothing, just wait
-	}
+	TIMER_Init(TIMER0, &timerInit);
+}
+
+void start_timer(uint32_t us) {
+	delay_ticks = (SystemCoreClock / 1000000) * us;
+
+	// Set the TIMER top value
+	TIMER_TopSet(TIMER0, delay_ticks);
+
+	// Clear the counter
+	TIMER_CounterSet(TIMER0, 0);
+
+	// Clear any pending interrupts
+	TIMER_IntClear(TIMER0, TIMER_IF_OF);
+
+	// Start the timer
+	TIMER_Enable(TIMER0, true);
+}
+
+bool timer_expired(void) {
+	return (TIMER_IntGet(TIMER0) & TIMER_IF_OF) != 0;
+}
+
+void clear_timer(void) {
+	// Clear the interrupt flag
+	TIMER_IntClear(TIMER0, TIMER_IF_OF);
+
+	// Disable the timer
+	TIMER_Enable(TIMER0, false);
 }
 
 static void enable_charge_balancing(void) {
@@ -251,42 +274,14 @@ static void enable_charge_balancing(void) {
 static void enable_stimulation_output(void) {
 	float stimVolts = calcStimVolts();
 	GPIO_PinOutSet(SHDN_PORT, SHDN_PIN);
-	delay_microseconds(100);
 	setTxBufferVolts(stimVolts);
-	delay_microseconds(5);
-	GPIO_PinOutSet(ELEC0_OUT_PORT, ELEC0_OUT_PIN);
-	GPIO_PinOutSet(ELEC1_OUT_PORT, ELEC1_OUT_PIN);
-	sl_led_turn_on(LED0);
 }
 
 static void disable_output(void) {
+	GPIO_PinOutClear(ELEC0_OUT_PORT, ELEC0_OUT_PIN);
 	GPIO_PinOutClear(ELEC1_OUT_PORT, ELEC1_OUT_PIN);
 	GPIO_PinOutClear(SHDN_PORT, SHDN_PIN);
 	setTxBufferVolts(refVolts);
-	sl_led_turn_off(LED0);
-}
-
-static void on_charge_balance_timeout(sl_sleeptimer_timer_handle_t *handle,
-		void *data) {
-	(void) handle;
-	(void) data;
-	disable_output(); // Disable output after charge balancing
-}
-
-static void on_pulse_timeout(sl_sleeptimer_timer_handle_t *handle, void *data) {
-	(void) handle;
-	(void) data;
-
-	enable_charge_balancing();
-
-	// Calculate the number of ticks for pulse_duration in µs
-	uint32_t timer_frequency = sl_sleeptimer_get_timer_frequency();
-	uint32_t pulse_duration_ticks = CHARGE_BALANCE_RATIO
-			* ((pulse_duration * timer_frequency) / 1000000);
-
-	// Start charge balancing timer for a fixed duration
-	sl_sleeptimer_start_timer(&timer_charge_balance, pulse_duration_ticks,
-			on_charge_balance_timeout, NULL, 0, 0);
 }
 
 static void on_stimulation_timeout(sl_sleeptimer_timer_handle_t *handle,
@@ -294,82 +289,70 @@ static void on_stimulation_timeout(sl_sleeptimer_timer_handle_t *handle,
 	(void) handle;
 	(void) data;
 
-	enable_stimulation_output(); // Start the stimulation pulse
-
-	// Calculate the number of ticks for pulse_duration in µs
-	uint32_t timer_frequency = sl_sleeptimer_get_timer_frequency();
-	uint32_t pulse_duration_ticks = (pulse_duration * timer_frequency)
-			/ 1000000;
-
-	// Start the pulse timer
-	sl_sleeptimer_start_timer(&timer_pulse, pulse_duration_ticks,
-			on_pulse_timeout, NULL, 0, 0);
+	// Transition to the state to enable stimulation
+	current_state = STATE_ENABLE_STIMULATION;
 }
 
 void start_stimulation(void) {
 	sl_status_t status;
 	bool isRunning = false;
 
-	// Check if the timer is running
 	status = sl_sleeptimer_is_timer_running(&timer_stimulation, &isRunning);
 
 	if (status == SL_STATUS_OK && !isRunning) {
-		// Timer is not running, so start it
 		sl_sleeptimer_start_periodic_timer(&timer_stimulation,
 				sl_sleeptimer_ms_to_tick(1000 / frequency),
 				on_stimulation_timeout, NULL, 0, 0);
+		current_state = STATE_ENABLE_STIMULATION;
 	}
 }
 
 void stop_stimulation(void) {
-	// Stop the stimulation timer
 	sl_sleeptimer_stop_timer(&timer_stimulation);
-	// Stop the pulse timer if running
-	sl_sleeptimer_stop_timer(&timer_pulse);
-	// Stop the charge balancing timer if running
-	sl_sleeptimer_stop_timer(&timer_charge_balance);
 	disable_output();
+	current_state = STATE_IDLE;
 }
 
-static void on_blink_timeout(sl_sleeptimer_timer_handle_t *handle, void *data) {
-	(void) handle;
-	(void) data;
-	toggle_blink_timeout = true;
-}
-
-void start_blinking(void) {
-	sl_status_t status;
-	bool isRunning = false;
-
-	should_blink = true;
-	// Check if the timer is running
-	status = sl_sleeptimer_is_timer_running(&timer_blink, &isRunning);
-
-	if (status == SL_STATUS_OK && !isRunning) {
-		// Timer is not running, so start it
-		sl_sleeptimer_start_periodic_timer_ms(&timer_blink, TOGGLE_DELAY_MS,
-				on_blink_timeout, NULL, 0,
-				SL_SLEEPTIMER_NO_HIGH_PRECISION_HF_CLOCKS_REQUIRED_FLAG);
+void stop_ble_advertising(void) {
+	sl_status_t status = sl_bt_advertiser_stop(advertising_set_handle);
+	if (status != SL_STATUS_OK) {
 	}
 }
 
-void stop_blinking(void) {
-	should_blink = false;
-	// Stop the timer
-	sl_sleeptimer_stop_timer(&timer_blink);
-}
-
-void process_actions(void) {
-	if (toggle_blink_timeout && should_blink) {
-		sl_led_toggle(LED0);
-		toggle_blink_timeout = false;
-	}
-
-//	if (spi_transfer_pending) {
-//		transferTxBuffer();
-//		spi_transfer_pending = false;
+//void MAG_PIN_interrupt_handler(uint8_t pin) {
+//	// Disable the interrupt
+//	GPIO_IntDisable(1 << pin);
+//
+//	// Re-enable BLE functionality
+//	sl_bt_legacy_advertiser_start(advertising_set_handle,
+//			sl_bt_legacy_advertiser_connectable);
+//
+//	// Clear the interrupt flag
+//	GPIO_IntClear(1 << pin);
+//}
+//
+//void GPIO_EVEN_IRQHandler(void) {
+//	uint32_t flags = GPIO_IntGet();
+//	GPIO_IntClear(flags);
+//
+//	if (flags & (1 << MAG_PIN)) {
+//		MAG_PIN_interrupt_handler(MAG_PIN);
 //	}
-}
+//}
+//
+//void init_mag_pin_interrupt(void) {
+//	// Configure MAG_PIN as input with pull-up
+//	GPIO_PinModeSet(MAG_PORT, MAG_PIN, gpioModeInputPull, 1);
+//
+//	// Enable interrupt on MAG_PIN
+//	GPIO_ExtIntConfig(MAG_PORT, MAG_PIN, MAG_PIN, false, true, true);
+//
+//	// Clear any pending interrupts
+//	GPIO_IntClear(1 << MAG_PIN);
+//
+//	// Enable the interrupt
+//	GPIO_IntEnable(1 << MAG_PIN);
+//}
 
 /**************************************************************************//**
  * Application Init.
@@ -379,8 +362,9 @@ SL_WEAK void app_init(void) {
 	// Put your additional application init code here!                         //
 	// This is called once during start-up.                                    //
 	/////////////////////////////////////////////////////////////////////////////
+	sl_led_turn_on(LED0);
 	GPIO_PinModeSet(SHDN_PORT, SHDN_PIN, gpioModePushPull, 0);
-	GPIO_PinModeSet(MAG_PORT, MAG_PIN, gpioModeInputPull, 1);
+//	GPIO_PinModeSet(MAG_PORT, MAG_PIN, gpioModeInputPull, 1);
 	GPIO_PinModeSet(ELEC0_OUT_PORT, ELEC0_OUT_PIN, gpioModePushPull, 0);
 	GPIO_PinModeSet(ELEC1_OUT_PORT, ELEC1_OUT_PIN, gpioModePushPull, 0);
 
@@ -390,7 +374,31 @@ SL_WEAK void app_init(void) {
 	frequency = read_frequency();
 	pulse_duration = read_pulse_duration();
 
-	spidrv_app_init();
+	// DAC init
+	setTxBufferGain();
+	setTxBufferVolts(refVolts);
+
+	init_timer();
+
+	uint32_t sleeptimerFreq = sl_sleeptimer_get_timer_frequency();
+
+	// Calculate the resolution in microseconds
+	float sleeptimerResolution_us = (1.0 / sleeptimerFreq) * 1000000;
+
+	// Variable to check using the debugger
+	volatile float resolution_us = sleeptimerResolution_us;
+
+	sl_led_turn_off(LED0);
+
+//	// Enable GPIO clock
+//	CMU_ClockEnable(cmuClock_GPIO, true);
+//
+//	// Register the interrupt handler
+//	NVIC_EnableIRQ(GPIO_EVEN_IRQn);
+//	NVIC_SetPriority(GPIO_EVEN_IRQn, 1);
+//
+//	// Initialize MAG_PIN interrupt
+//	init_mag_pin_interrupt();
 }
 
 /**************************************************************************//**
@@ -402,7 +410,64 @@ SL_WEAK void app_process_action(void) {
 	// This is called infinitely.                                              //
 	// Do not call blocking functions from here!                               //
 	/////////////////////////////////////////////////////////////////////////////
-	process_actions();
+	switch (current_state) {
+	case STATE_IDLE:
+		// Do nothing
+		break;
+
+	case STATE_ENABLE_STIMULATION:
+		enable_stimulation_output();
+		start_timer(OP_AMP_SETTLE);
+		current_state = STATE_WAIT_FOR_OP_AMP_SETTLE;
+		break;
+
+	case STATE_WAIT_FOR_OP_AMP_SETTLE:
+		if (timer_expired()) {
+			clear_timer();
+			setTxBufferVolts(calcStimVolts());
+			start_timer(5); // 5 us delay
+			current_state = STATE_SET_STIM_VOLTAGE;
+		}
+		break;
+
+	case STATE_SET_STIM_VOLTAGE:
+		if (timer_expired()) {
+			clear_timer();
+			GPIO_PinOutSet(ELEC0_OUT_PORT, ELEC0_OUT_PIN);
+			GPIO_PinOutSet(ELEC1_OUT_PORT, ELEC1_OUT_PIN);
+			start_timer(pulse_duration);
+			current_state = STATE_WAIT_FOR_STIM_PULSE;
+		}
+		break;
+
+	case STATE_WAIT_FOR_STIM_PULSE:
+		if (timer_expired()) {
+			clear_timer();
+			enable_charge_balancing();
+			start_timer(CHARGE_BALANCE_RATIO * pulse_duration);
+			current_state = STATE_WAIT_FOR_CHARGE_BALANCING;
+		}
+		break;
+
+	case STATE_ENABLE_CHARGE_BALANCING:
+		enable_charge_balancing();
+		start_timer(CHARGE_BALANCE_RATIO * pulse_duration);
+		current_state = STATE_WAIT_FOR_CHARGE_BALANCING;
+		break;
+
+	case STATE_WAIT_FOR_CHARGE_BALANCING:
+		if (timer_expired()) {
+			clear_timer();
+			disable_output();
+			current_state = STATE_DISABLE_OUTPUT;
+		}
+		break;
+
+	case STATE_DISABLE_OUTPUT:
+		disable_output();
+		current_state = STATE_IDLE;
+		break;
+	}
 }
 
 /**************************************************************************//**
@@ -429,8 +494,9 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
 		app_assert_status(sc);
 
 		// Set advertising interval to 100ms.
-		sc = sl_bt_advertiser_set_timing(advertising_set_handle, 1000, // min. adv. interval (milliseconds * 1.6)
-				1000, // max. adv. interval (milliseconds * 1.6)
+		sc = sl_bt_advertiser_set_timing(advertising_set_handle,
+		ADV_INTERVAL_MS, // min. adv. interval (milliseconds * 1.6)
+				ADV_INTERVAL_MS, // max. adv. interval (milliseconds * 1.6)
 				0,   // adv. duration
 				0);  // max. num. adv. events
 		app_assert_status(sc);
@@ -449,7 +515,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
 		sc = sl_bt_gatt_server_write_attribute_value(
 		gattdb_node_tx, 0, sizeof(commandStr), (uint8_t*) commandStr);
 //		stop_stimulation();
-//		stop_blinking();
 //		sl_led_turn_off(LED0); // known state
 		break;
 
@@ -458,7 +523,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
 	case sl_bt_evt_connection_closed_id:
 //		sl_led_turn_off(LED0); // known state
 //		if (activateStim) {
-//			start_blinking();
 //			start_stimulation();
 //		}
 
