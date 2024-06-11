@@ -28,6 +28,15 @@
 #include "nvm3.h"
 #include "nvm3_default.h"
 
+// TIMING
+#define SLEEP_TIMER_TICK_US 30
+#define OP_AMP_INIT_TICKS	4
+#define STIM_OFFSET_US 93 // empirical
+#define CHARGE_BALANCE_OFFSET_US 36 // empirical
+sl_sleeptimer_timer_handle_t timer_stimulation; // based on frequency
+sl_sleeptimer_timer_handle_t timer_pulse; // based on amplitude
+sl_sleeptimer_timer_handle_t timer_charge_balance; // balance amplitude
+
 // STIM
 #define CHARGE_BALANCE_RATIO 5
 
@@ -43,53 +52,32 @@ uint8_t cap_id;
 #define COMMAND_STR_MAX_SIZE 26 // should match nodeTx characteristic size
 static uint8_t advertising_set_handle = 0xff;
 char commandStr[COMMAND_STR_MAX_SIZE];
+#define APP_BUFFER_SIZE             3
+uint8_t rx_buffer[APP_BUFFER_SIZE];
+uint8_t tx_buffer[APP_BUFFER_SIZE];
 
 // App
+// Transmission and reception buffers
 static uint8_t activateStim = 0;
 static int amplitude = 0;
 static int frequency = 0;
 static int pulse_duration = 0;
 
-// Functions
+// Functions (needs .h)
+extern uint32_t sl_sleeptimer_get_timer_frequency(void);
 void
 handleNodeRxChange(uint8_t *data, size_t len);
 void
 compileCommandString(char *commandStr);
-
-// SPI/DAC
-#define SPI_HANDLE                  sl_spidrv_inst_handle
-// size of transmission and reception buffers
-#define APP_BUFFER_SIZE             3
-
-// Transmission and reception buffers
-uint8_t rx_buffer[APP_BUFFER_SIZE];
-uint8_t tx_buffer[APP_BUFFER_SIZE];
-static const float refVolts = 1.25;
-static const uint16_t maxADCValue = 65535;
-
-// !! put this in .h
 void setTxBufferGain(void);
 void setTxBufferVolts(float outputVolts);
 void transferTxBuffer(void);
 void delay_microseconds(uint32_t us);
 
-#define TOGGLE_DELAY_MS 100
-#define APP_BUFFER_SIZE 3
-
-sl_sleeptimer_timer_handle_t timer_blink;
-sl_sleeptimer_timer_handle_t timer_stimulation; // based on frequency
-sl_sleeptimer_timer_handle_t timer_pulse; // based on amplitude
-sl_sleeptimer_timer_handle_t timer_charge_balance; // balance amplitude
-
-bool toggle_blink_timeout = false;
-bool should_blink = false; // Global flag to control blinking
-bool transfer_complete = false; // Flag for SPI transfer completion
-bool spi_transfer_pending = false; // Flag for pending SPI transfer
-
-uint8_t tx_buffer[APP_BUFFER_SIZE];
-uint8_t rx_buffer[APP_BUFFER_SIZE];
-
-extern uint32_t sl_sleeptimer_get_timer_frequency(void);
+// SPI/DAC
+#define SPI_HANDLE                  sl_spidrv_inst_handle
+static const float refVolts = 1.25;
+static const uint16_t maxADCValue = 65535;
 
 void nvm3_init(void) {
 	Ecode_t result = nvm3_initDefault();
@@ -187,16 +175,16 @@ float calcChargeBalanceVolts(void) {
 	return chargeBalanceVolts;
 }
 
-void transfer_callback(SPIDRV_HandleData_t *handle, Ecode_t transfer_status,
-		int items_transferred) {
-	(void) handle;
-	(void) items_transferred;
-
-	// Post semaphore to signal to application task that transfer is successful
-	if (transfer_status == ECODE_EMDRV_SPIDRV_OK) {
-		transfer_complete = true;
-	}
-}
+//void transfer_callback(SPIDRV_HandleData_t *handle, Ecode_t transfer_status,
+//		int items_transferred) {
+//	(void) handle;
+//	(void) items_transferred;
+//
+//	// Post semaphore to signal to application task that transfer is successful
+//	if (transfer_status == ECODE_EMDRV_SPIDRV_OK) {
+//		transfer_complete = true;
+//	}
+//}
 
 void spidrv_app_init(void) {
 	setTxBufferGain();
@@ -209,7 +197,6 @@ void setTxBufferGain(void) {
 	tx_buffer[1] = 0x80;
 	tx_buffer[2] = 0x00;
 	transferTxBuffer();
-//	spi_transfer_pending = true;
 }
 
 void setTxBufferVolts(float outputVolts) {
@@ -219,12 +206,10 @@ void setTxBufferVolts(float outputVolts) {
 	tx_buffer[1] = (ADC_bits >> 4) & 0xFF;       // Middle 8 bits of ADC_bits
 	tx_buffer[2] = (ADC_bits << 4) & 0xF0; // Last 4 bits of ADC_bits shifted to the top, lower 4 bits are 0
 	transferTxBuffer();
-//	spi_transfer_pending = true;
 }
 
 void transferTxBuffer(void) {
 	Ecode_t ecode;
-	transfer_complete = false;
 	ecode = SPIDRV_MTransferB(SPI_HANDLE, tx_buffer, rx_buffer,
 	APP_BUFFER_SIZE); // transfer_callback
 	EFM_ASSERT(ecode == ECODE_OK);
@@ -251,19 +236,17 @@ static void enable_charge_balancing(void) {
 static void enable_stimulation_output(void) {
 	float stimVolts = calcStimVolts();
 	GPIO_PinOutSet(SHDN_PORT, SHDN_PIN);
-	delay_microseconds(100);
 	setTxBufferVolts(stimVolts);
-	delay_microseconds(5);
+	delay_microseconds(SLEEP_TIMER_TICK_US * OP_AMP_INIT_TICKS);
 	GPIO_PinOutSet(ELEC0_OUT_PORT, ELEC0_OUT_PIN);
 	GPIO_PinOutSet(ELEC1_OUT_PORT, ELEC1_OUT_PIN);
-	sl_led_turn_on(LED0);
 }
 
 static void disable_output(void) {
+	GPIO_PinOutClear(ELEC0_OUT_PORT, ELEC0_OUT_PIN);
 	GPIO_PinOutClear(ELEC1_OUT_PORT, ELEC1_OUT_PIN);
 	GPIO_PinOutClear(SHDN_PORT, SHDN_PIN);
 	setTxBufferVolts(refVolts);
-	sl_led_turn_off(LED0);
 }
 
 static void on_charge_balance_timeout(sl_sleeptimer_timer_handle_t *handle,
@@ -273,18 +256,28 @@ static void on_charge_balance_timeout(sl_sleeptimer_timer_handle_t *handle,
 	disable_output(); // Disable output after charge balancing
 }
 
+static uint32_t getPulseDurationTicks(uint32_t pulse_duration) {
+	// Calculate the number of ticks for pulse_duration in µs
+	uint32_t timer_frequency = sl_sleeptimer_get_timer_frequency();
+	uint32_t pulse_duration_ticks = (pulse_duration * timer_frequency)
+			/ 1000000;
+	return pulse_duration_ticks;
+}
+
 static void on_pulse_timeout(sl_sleeptimer_timer_handle_t *handle, void *data) {
 	(void) handle;
 	(void) data;
 
 	enable_charge_balancing();
 
-	// Calculate the number of ticks for pulse_duration in µs
-	uint32_t timer_frequency = sl_sleeptimer_get_timer_frequency();
-	uint32_t pulse_duration_ticks = CHARGE_BALANCE_RATIO
-			* ((pulse_duration * timer_frequency) / 1000000);
+	uint32_t adj_pulse_duration = pulse_duration * CHARGE_BALANCE_RATIO;
+	uint32_t nonzero_pulse_duration =
+			(adj_pulse_duration > CHARGE_BALANCE_OFFSET_US) ?
+					(adj_pulse_duration - CHARGE_BALANCE_OFFSET_US) : 0;
+	uint32_t pulse_duration_ticks = getPulseDurationTicks(
+			nonzero_pulse_duration);
 
-	// Start charge balancing timer for a fixed duration
+	// Start charge balancing using CHARGE_BALANCE_RATIO multiplier
 	sl_sleeptimer_start_timer(&timer_charge_balance, pulse_duration_ticks,
 			on_charge_balance_timeout, NULL, 0, 0);
 }
@@ -296,10 +289,11 @@ static void on_stimulation_timeout(sl_sleeptimer_timer_handle_t *handle,
 
 	enable_stimulation_output(); // Start the stimulation pulse
 
-	// Calculate the number of ticks for pulse_duration in µs
-	uint32_t timer_frequency = sl_sleeptimer_get_timer_frequency();
-	uint32_t pulse_duration_ticks = (pulse_duration * timer_frequency)
-			/ 1000000;
+	uint32_t nonzero_pulse_duration =
+			(pulse_duration > STIM_OFFSET_US) ?
+					(pulse_duration - STIM_OFFSET_US) : 0;
+	uint32_t pulse_duration_ticks = getPulseDurationTicks(
+			nonzero_pulse_duration);
 
 	// Start the pulse timer
 	sl_sleeptimer_start_timer(&timer_pulse, pulse_duration_ticks,
@@ -331,46 +325,6 @@ void stop_stimulation(void) {
 	disable_output();
 }
 
-static void on_blink_timeout(sl_sleeptimer_timer_handle_t *handle, void *data) {
-	(void) handle;
-	(void) data;
-	toggle_blink_timeout = true;
-}
-
-void start_blinking(void) {
-	sl_status_t status;
-	bool isRunning = false;
-
-	should_blink = true;
-	// Check if the timer is running
-	status = sl_sleeptimer_is_timer_running(&timer_blink, &isRunning);
-
-	if (status == SL_STATUS_OK && !isRunning) {
-		// Timer is not running, so start it
-		sl_sleeptimer_start_periodic_timer_ms(&timer_blink, TOGGLE_DELAY_MS,
-				on_blink_timeout, NULL, 0,
-				SL_SLEEPTIMER_NO_HIGH_PRECISION_HF_CLOCKS_REQUIRED_FLAG);
-	}
-}
-
-void stop_blinking(void) {
-	should_blink = false;
-	// Stop the timer
-	sl_sleeptimer_stop_timer(&timer_blink);
-}
-
-void process_actions(void) {
-	if (toggle_blink_timeout && should_blink) {
-		sl_led_toggle(LED0);
-		toggle_blink_timeout = false;
-	}
-
-//	if (spi_transfer_pending) {
-//		transferTxBuffer();
-//		spi_transfer_pending = false;
-//	}
-}
-
 /**************************************************************************//**
  * Application Init.
  *****************************************************************************/
@@ -380,7 +334,7 @@ SL_WEAK void app_init(void) {
 	// This is called once during start-up.                                    //
 	/////////////////////////////////////////////////////////////////////////////
 	GPIO_PinModeSet(SHDN_PORT, SHDN_PIN, gpioModePushPull, 0);
-	GPIO_PinModeSet(MAG_PORT, MAG_PIN, gpioModeInputPull, 1);
+//	GPIO_PinModeSet(MAG_PORT, MAG_PIN, gpioModeInputPull, 1);
 	GPIO_PinModeSet(ELEC0_OUT_PORT, ELEC0_OUT_PIN, gpioModePushPull, 0);
 	GPIO_PinModeSet(ELEC1_OUT_PORT, ELEC1_OUT_PIN, gpioModePushPull, 0);
 
@@ -402,7 +356,6 @@ SL_WEAK void app_process_action(void) {
 	// This is called infinitely.                                              //
 	// Do not call blocking functions from here!                               //
 	/////////////////////////////////////////////////////////////////////////////
-	process_actions();
 }
 
 /**************************************************************************//**
@@ -449,7 +402,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
 		sc = sl_bt_gatt_server_write_attribute_value(
 		gattdb_node_tx, 0, sizeof(commandStr), (uint8_t*) commandStr);
 //		stop_stimulation();
-//		stop_blinking();
 //		sl_led_turn_off(LED0); // known state
 		break;
 
@@ -458,7 +410,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
 	case sl_bt_evt_connection_closed_id:
 //		sl_led_turn_off(LED0); // known state
 //		if (activateStim) {
-//			start_blinking();
 //			start_stimulation();
 //		}
 
