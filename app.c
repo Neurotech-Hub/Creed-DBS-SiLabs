@@ -336,7 +336,7 @@ SL_WEAK void app_init(void) {
 	/////////////////////////////////////////////////////////////////////////////
 	sl_led_turn_on(LED0);
 	GPIO_PinModeSet(SHDN_PORT, SHDN_PIN, gpioModePushPull, 0);
-//	GPIO_PinModeSet(MAG_PORT, MAG_PIN, gpioModeInputPull, 1);
+	GPIO_PinModeSet(MAG_PORT, MAG_PIN, gpioModeInputPull, 1);
 	GPIO_PinModeSet(ELEC0_OUT_PORT, ELEC0_OUT_PIN, gpioModePushPull, 0);
 	GPIO_PinModeSet(ELEC1_OUT_PORT, ELEC1_OUT_PIN, gpioModePushPull, 0);
 

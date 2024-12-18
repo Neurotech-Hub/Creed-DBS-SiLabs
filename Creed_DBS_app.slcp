@@ -20,7 +20,7 @@ source:
 - {path: app.c}
 tag: ['hardware:rf:band:2400']
 include:
-- path: ''
+- path: .
   file_list:
   - {path: app.h}
 sdk: {id: gecko_sdk, version: 4.4.1}

@@ -2,16 +2,22 @@
 <device:XMLDevice xmi:version="2.0" xmlns:xmi="http://www.omg.org/XMI" xmlns:device="http://www.silabs.com/ss/hwconfig/document/device.ecore" name="pin_tool.BGM220SC22HNA" partId="mcu.arm.efr32.bg22.bgm220sc22hna" contextId="com.silabs.sdk.stack.super:4.4.1._1474747510">
   <mode name="DefaultMode">
     <property object="DefaultMode" propertyId="mode.diagramLocation" value="100, 100"/>
-    <property object="PB00" propertyId="pin.name" value="MAG"/>
+    <property object="PA07" propertyId="pin.name" value="MAG"/>
+    <property object="PA07" propertyId="pin.reserve" value="Reserved"/>
+    <property object="PB00" propertyId="pin.name" value="SHDN"/>
     <property object="PB00" propertyId="pin.reserve" value="Reserved"/>
-    <property object="PB04" propertyId="ABModule.selectedRequirement" value="gpio%T%SL_SIMPLE_LED_INST%T%sl_simple_led_inst_config.h"/>
-    <property object="PB04" propertyId="pin.name" value="LED0"/>
+    <property object="PB01" propertyId="ABModule.selectedRequirement" value="gpio%T%SL_SIMPLE_LED_INST%T%sl_simple_led_inst_config.h"/>
+    <property object="PB01" propertyId="pin.name" value="LED0"/>
+    <property object="PB01" propertyId="pin.reserve" value="Reserved"/>
+    <property object="PB02" propertyId="pin.name" value="ELEC0_OUT"/>
+    <property object="PB02" propertyId="pin.reserve" value="Reserved"/>
+    <property object="PB04" propertyId="pin.name" value="ELEC1_OUT"/>
     <property object="PB04" propertyId="pin.reserve" value="Reserved"/>
-    <property object="PC03" propertyId="pin.name" value="SHDN"/>
+    <property object="PC03" propertyId="pin.name" value=""/>
     <property object="PC03" propertyId="pin.reserve" value="Reserved"/>
-    <property object="PD02" propertyId="pin.name" value="ELEC1_OUT"/>
+    <property object="PD02" propertyId="pin.name" value=""/>
     <property object="PD02" propertyId="pin.reserve" value="Reserved"/>
-    <property object="PD03" propertyId="pin.name" value="ELEC0_OUT"/>
+    <property object="PD03" propertyId="pin.name" value=""/>
     <property object="PD03" propertyId="pin.reserve" value="Reserved"/>
     <property object="PORTIO" propertyId="portio.usart0.enable.clk" value="Enabled"/>
     <property object="PORTIO" propertyId="portio.usart0.enable.cs" value="Enabled"/>
