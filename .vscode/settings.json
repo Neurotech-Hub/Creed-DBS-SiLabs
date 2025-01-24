@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "gatt_db.h": "c",
+        "sl_simple_led_instances.h": "c"
+    }
+}

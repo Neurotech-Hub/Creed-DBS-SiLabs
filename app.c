@@ -26,6 +26,10 @@
 #include "nvm3.h"
 #include "nvm3_default.h"
 
+// Add near other includes
+#include "em_iadc.h"
+#include "em_cmu.h"
+
 // TIMING
 #define SLEEP_TIMER_TICK_US 30
 #define OP_AMP_INIT_TICKS 4
@@ -48,7 +52,7 @@ sl_sleeptimer_timer_handle_t timer_charge_balance; // balance amplitude
 uint8_t cap_id;
 
 // BLE
-#define COMMAND_STR_MAX_SIZE 26 // should match nodeTx characteristic size
+#define COMMAND_STR_MAX_SIZE 20 // Maximum possible MTU size
 static uint8_t advertising_set_handle = 0xff;
 char commandStr[COMMAND_STR_MAX_SIZE];
 #define APP_BUFFER_SIZE 3
@@ -90,6 +94,19 @@ static bool led_is_flashing = false;
 // Add these function declarations near the top of the file, after the other function declarations
 void gpio_init(void);
 static void on_led_flash_timeout(sl_sleeptimer_timer_handle_t *handle, void *data);
+
+// Add near other defines
+#define IADC_REFERENCE_VOLTAGE 3.3f
+
+// Add near other defines
+#define MIN_MTU_SIZE 255		  // Minimum required MTU size
+#define MTU_CHECK_INTERVAL_MS 100 // Check every 100ms
+#define MTU_CHECK_TIMEOUT_MS 3000 // Give up after 3 seconds
+
+// Add near other global variables
+static sl_sleeptimer_timer_handle_t mtu_check_timer;
+static uint8_t current_connection = 0;
+static uint16_t mtu_check_count = 0;
 
 void nvm3_init(void)
 {
@@ -391,6 +408,7 @@ SL_WEAK void app_init(void)
 
 	spidrv_app_init();
 	gpio_init();
+	iadc_init();
 
 	// Ensure LED starts off
 	sl_led_turn_off(LED0);
@@ -473,12 +491,13 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
 		// -------------------------------
 		// This event indicates that a new connection was opened.
 	case sl_bt_evt_connection_opened_id:
-		// update for initial sync
+		// Store connection handle
+		current_connection = evt->data.evt_connection_opened.connection;
+		// Update characteristic immediately on connection
 		compileCommandString(commandStr);
 		sc = sl_bt_gatt_server_write_attribute_value(
 			gattdb_node_tx, 0, sizeof(commandStr), (uint8_t *)commandStr);
-		//		stop_stimulation();
-		//		sl_led_turn_off(LED0); // known state
+		app_assert_status(sc);
 		break;
 
 		// -------------------------------
@@ -499,13 +518,10 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
 		// This event indicates that the value of an attribute in the local GATT
 		// database was changed by a remote GATT client.
 	case sl_bt_evt_gatt_server_attribute_value_id:
-		// The value of the gattdb_led_control characteristic was changed.
-
-		// Check if the attribute written is gattdb_node_rx
 		if (evt->data.evt_gatt_server_attribute_value.attribute == gattdb_node_rx)
 		{
-			// Read the updated value
-			uint8_t buffer[26]; // !! set to char size, can't use #define
+			// Use dynamic size based on actual data
+			uint8_t buffer[COMMAND_STR_MAX_SIZE];
 			size_t len = 0;
 			sc = sl_bt_gatt_server_read_attribute_value(
 				gattdb_node_rx, 0, sizeof(buffer), &len, buffer);
@@ -530,6 +546,9 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
 	case sl_bt_evt_gatt_server_characteristic_status_id:
 		break;
 
+	case sl_bt_evt_gatt_mtu_exchanged_id:
+		break;
+
 		///////////////////////////////////////////////////////////////////////////
 		// Add additional event handlers here as your application requires!      //
 		///////////////////////////////////////////////////////////////////////////
@@ -548,8 +567,8 @@ void compileCommandString(char *commandStr)
 		// Initialize the entire buffer with null characters
 		memset(commandStr, 0, COMMAND_STR_MAX_SIZE);
 		// Format the string with the global variable values
-		sprintf(commandStr, "_A%u,F%u,P%u,G%u,N%u", amplitude, frequency,
-				pulse_duration, activateStim, cap_id);
+		sprintf(commandStr, "_A%u,F%u,P%u,G%u,N%u,V%lu", amplitude, frequency,
+				pulse_duration, activateStim, cap_id, read_battery_voltage());
 	}
 }
 
@@ -703,4 +722,43 @@ static void on_led_flash_timeout(sl_sleeptimer_timer_handle_t *handle, void *dat
 			led_is_flashing = true;
 		}
 	}
+}
+
+void iadc_init(void)
+{
+	// // Enable IADC clock
+	// CMU_ClockEnable(cmuClock_IADC0, true);
+
+	// // Initialize IADC
+	// IADC_Init_t init = IADC_INIT_DEFAULT;
+	// IADC_init(IADC0, &init, NULL);
+
+	// // Configure IADC input
+	// IADC_SingleInput_t input = IADC_SINGLEINPUT_DEFAULT;
+	// input.negInput = iadcNegInputGnd;		// Single-ended mode
+	// input.posInput = iadcPosInputPortCPin2; // PC02 - VBATT
+
+	// // Initialize IADC single mode
+	// IADC_InitSingle_t initSingle = IADC_INITSINGLE_DEFAULT;
+	// IADC_initSingle(IADC0, &initSingle, &input);
+}
+
+uint32_t read_battery_voltage(void)
+{
+	// // Start single conversion
+	// IADC_command(IADC0, iadcCmdStartSingle);
+
+	// // Wait for conversion to complete
+	// while ((IADC0->STATUS & IADC_STATUS_CONVERTING))
+	// 	;
+
+	// // Get ADC result
+	// IADC_Result_t result = IADC_readSingleResult(IADC0);
+
+	// // Convert to millivolts (12-bit ADC)
+	// uint32_t voltage_mv = (result.data * 3300) / 0xFFF; // 3300 = 3.3V in millivolts
+
+	uint32_t voltage_mv = 3300;
+
+	return voltage_mv;
 }

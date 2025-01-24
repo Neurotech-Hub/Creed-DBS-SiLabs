@@ -41,4 +41,8 @@ void delay_microseconds(uint32_t us);
 void handleNodeRxChange(uint8_t *data, size_t len);
 void compileCommandString(char *commandStr);
 
+// Battery Monitoring Functions
+uint32_t read_battery_voltage(void);
+void iadc_init(void);
+
 #endif // APP_H
