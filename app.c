@@ -98,15 +98,8 @@ static void on_led_flash_timeout(sl_sleeptimer_timer_handle_t *handle, void *dat
 // Add near other defines
 #define IADC_REFERENCE_VOLTAGE 3.3f
 
-// Add near other defines
-#define MIN_MTU_SIZE 255		  // Minimum required MTU size
-#define MTU_CHECK_INTERVAL_MS 100 // Check every 100ms
-#define MTU_CHECK_TIMEOUT_MS 3000 // Give up after 3 seconds
-
 // Add near other global variables
-static sl_sleeptimer_timer_handle_t mtu_check_timer;
-static uint8_t current_connection = 0;
-static uint16_t mtu_check_count = 0;
+static uint8_t txCharSwitch = 1; // Default to first set of values
 
 void nvm3_init(void)
 {
@@ -491,13 +484,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
 		// -------------------------------
 		// This event indicates that a new connection was opened.
 	case sl_bt_evt_connection_opened_id:
-		// Store connection handle
-		current_connection = evt->data.evt_connection_opened.connection;
-		// Update characteristic immediately on connection
-		compileCommandString(commandStr);
-		sc = sl_bt_gatt_server_write_attribute_value(
-			gattdb_node_tx, 0, sizeof(commandStr), (uint8_t *)commandStr);
-		app_assert_status(sc);
 		break;
 
 		// -------------------------------
@@ -528,8 +514,8 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
 
 			if (sc == SL_STATUS_OK)
 			{
-				handleNodeRxChange(buffer, len);
-				compileCommandString(commandStr);
+				handleNodeRxChange(buffer, len);  // This updates txCharSwitch
+				compileCommandString(commandStr); // This uses the updated txCharSwitch
 				sc = sl_bt_gatt_server_write_attribute_value(
 					gattdb_node_tx, 0, sizeof(commandStr), (uint8_t *)commandStr);
 			}
@@ -564,11 +550,20 @@ void compileCommandString(char *commandStr)
 {
 	if (commandStr != NULL)
 	{
-		// Initialize the entire buffer with null characters
 		memset(commandStr, 0, COMMAND_STR_MAX_SIZE);
-		// Format the string with the global variable values
-		sprintf(commandStr, "_A%u,F%u,P%u,G%u,N%u,V%lu", amplitude, frequency,
-				pulse_duration, activateStim, cap_id, read_battery_voltage());
+
+		switch (txCharSwitch)
+		{
+		case 1:
+			sprintf(commandStr, "_A%u,F%u,P%u", amplitude, frequency, pulse_duration);
+			break;
+		case 2:
+			sprintf(commandStr, "_G%u,N%u,V%lu", activateStim, cap_id, read_battery_voltage());
+			break;
+		default:
+			sprintf(commandStr, "invalid tx value");
+			break;
+		}
 	}
 }
 
@@ -576,7 +571,22 @@ void handleNodeRxChange(uint8_t *data, size_t len)
 {
 	if (len == 0 || data[0] != '_')
 	{
-		return; // No valid data or does not start with '_'
+		return;
+	}
+
+	// Check for switch commands first - only check first two bytes
+	if (len >= 2) // Changed from len == 2
+	{
+		if (data[1] == '1')
+		{
+			txCharSwitch = 1;
+			return;
+		}
+		else if (data[1] == '2')
+		{
+			txCharSwitch = 2;
+			return;
+		}
 	}
 
 	// Convert data to null-terminated string
@@ -726,39 +736,37 @@ static void on_led_flash_timeout(sl_sleeptimer_timer_handle_t *handle, void *dat
 
 void iadc_init(void)
 {
-	// // Enable IADC clock
-	// CMU_ClockEnable(cmuClock_IADC0, true);
+	// Enable IADC clock
+	CMU_ClockEnable(cmuClock_IADC0, true);
 
-	// // Initialize IADC
-	// IADC_Init_t init = IADC_INIT_DEFAULT;
-	// IADC_init(IADC0, &init, NULL);
+	// Initialize IADC
+	IADC_Init_t init = IADC_INIT_DEFAULT;
+	IADC_init(IADC0, &init, NULL);
 
-	// // Configure IADC input
-	// IADC_SingleInput_t input = IADC_SINGLEINPUT_DEFAULT;
-	// input.negInput = iadcNegInputGnd;		// Single-ended mode
-	// input.posInput = iadcPosInputPortCPin2; // PC02 - VBATT
+	// Configure IADC input
+	IADC_SingleInput_t input = IADC_SINGLEINPUT_DEFAULT;
+	input.negInput = iadcNegInputGnd;		// Single-ended mode
+	input.posInput = iadcPosInputPortCPin2; // PC02 - VBATT
 
-	// // Initialize IADC single mode
-	// IADC_InitSingle_t initSingle = IADC_INITSINGLE_DEFAULT;
-	// IADC_initSingle(IADC0, &initSingle, &input);
+	// Initialize IADC single mode
+	IADC_InitSingle_t initSingle = IADC_INITSINGLE_DEFAULT;
+	IADC_initSingle(IADC0, &initSingle, &input);
 }
 
 uint32_t read_battery_voltage(void)
 {
-	// // Start single conversion
-	// IADC_command(IADC0, iadcCmdStartSingle);
+	// Start single conversion
+	IADC_command(IADC0, iadcCmdStartSingle);
 
-	// // Wait for conversion to complete
-	// while ((IADC0->STATUS & IADC_STATUS_CONVERTING))
-	// 	;
+	// Wait for conversion to complete
+	while ((IADC0->STATUS & IADC_STATUS_CONVERTING))
+		;
 
-	// // Get ADC result
-	// IADC_Result_t result = IADC_readSingleResult(IADC0);
+	// Get ADC result
+	IADC_Result_t result = IADC_readSingleResult(IADC0);
 
-	// // Convert to millivolts (12-bit ADC)
-	// uint32_t voltage_mv = (result.data * 3300) / 0xFFF; // 3300 = 3.3V in millivolts
-
-	uint32_t voltage_mv = 3300;
+	// Convert to millivolts (12-bit ADC)
+	uint32_t voltage_mv = (result.data * 3300) / 0xFFF; // 3300 = 3.3V in millivolts
 
 	return voltage_mv;
 }
