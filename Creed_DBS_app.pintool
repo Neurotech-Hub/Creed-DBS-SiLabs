@@ -20,6 +20,7 @@
     <property object="PD02" propertyId="pin.reserve" value="Reserved"/>
     <property object="PD03" propertyId="pin.name" value=""/>
     <property object="PD03" propertyId="pin.reserve" value="Reserved"/>
+    <property object="PORTIO" propertyId="portio.iadc0.enable.pos" value="Enabled"/>
     <property object="PORTIO" propertyId="portio.iadc0.location.pos" value="162"/>
     <property object="PORTIO" propertyId="portio.usart0.enable.clk" value="Enabled"/>
     <property object="PORTIO" propertyId="portio.usart0.enable.cs" value="Enabled"/>

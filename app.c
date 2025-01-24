@@ -736,37 +736,59 @@ static void on_led_flash_timeout(sl_sleeptimer_timer_handle_t *handle, void *dat
 
 void iadc_init(void)
 {
+	// Declare initialization structures
+	IADC_Init_t init = IADC_INIT_DEFAULT;
+	IADC_AllConfigs_t initAllConfigs = IADC_ALLCONFIGS_DEFAULT;
+	IADC_InitSingle_t initSingle = IADC_INITSINGLE_DEFAULT;
+	IADC_SingleInput_t initSingleInput = IADC_SINGLEINPUT_DEFAULT;
+
 	// Enable IADC clock
 	CMU_ClockEnable(cmuClock_IADC0, true);
 
+	// Select clock for IADC
+	CMU_ClockSelectSet(cmuClock_IADCCLK, cmuSelect_FSRCO); // FSRCO - 20MHz
+
+	// Modify init structs
+	init.warmup = iadcWarmupNormal;
+
+	// Set the prescale value and clock
+	init.srcClkPrescale = IADC_calcSrcClkPrescale(IADC0, 20000000, 0);
+
+	// Configuration 0 for single conversion
+	initAllConfigs.configs[0].reference = iadcCfgReferenceVddx; // Use VDD as reference
+	initAllConfigs.configs[0].vRef = 3300;						// 3.3V reference
+	initAllConfigs.configs[0].adcClkPrescale = IADC_calcAdcClkPrescale(IADC0,
+																	   10000000, // 10MHz ADC clock
+																	   0,
+																	   iadcCfgModeNormal,
+																	   init.srcClkPrescale);
+
+	// Single input configuration
+	initSingleInput.posInput = iadcPosInputPortCPin2; // PC02 - VBATT
+	initSingleInput.negInput = iadcNegInputGnd;		  // Single-ended mode
+
 	// Initialize IADC
-	IADC_Init_t init = IADC_INIT_DEFAULT;
-	IADC_init(IADC0, &init, NULL);
+	IADC_init(IADC0, &init, &initAllConfigs);
+	IADC_initSingle(IADC0, &initSingle, &initSingleInput);
 
-	// Configure IADC input
-	IADC_SingleInput_t input = IADC_SINGLEINPUT_DEFAULT;
-	input.negInput = iadcNegInputGnd;		// Single-ended mode
-	input.posInput = iadcPosInputPortCPin2; // PC02 - VBATT
-
-	// Initialize IADC single mode
-	IADC_InitSingle_t initSingle = IADC_INITSINGLE_DEFAULT;
-	IADC_initSingle(IADC0, &initSingle, &input);
+	// Allocate the analog bus for ADC0 inputs
+	GPIO->CDBUSALLOC |= GPIO_CDBUSALLOC_CDEVEN0_ADC0; // For PC02
 }
 
 uint32_t read_battery_voltage(void)
 {
-	// Start single conversion
+	// Start conversion
 	IADC_command(IADC0, iadcCmdStartSingle);
 
 	// Wait for conversion to complete
-	while ((IADC0->STATUS & IADC_STATUS_CONVERTING))
+	while ((IADC0->STATUS & (_IADC_STATUS_CONVERTING_MASK | _IADC_STATUS_SINGLEFIFODV_MASK)) != IADC_STATUS_SINGLEFIFODV)
 		;
 
 	// Get ADC result
-	IADC_Result_t result = IADC_readSingleResult(IADC0);
+	IADC_Result_t result = IADC_pullSingleFifoResult(IADC0);
 
 	// Convert to millivolts (12-bit ADC)
-	uint32_t voltage_mv = (result.data * 3300) / 0xFFF; // 3300 = 3.3V in millivolts
+	uint32_t voltage_mv = (result.data * 3300) / 0xFFF;
 
 	return voltage_mv;
 }
