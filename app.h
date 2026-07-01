@@ -21,10 +21,18 @@ void update_cap_id(uint8_t new_cap_id);
 void update_amplitude(int new_amplitude);
 void update_frequency(int new_frequency);
 void update_pulse_duration(int new_pulse_duration);
+void update_stim_mode(int new_stim_mode);
+void update_burst_period_ms(int new_burst_period_ms);
+void update_intra_burst_freq_hz(int new_intra_burst_freq_hz);
+void update_burst_duration_ms(int new_burst_duration_ms);
 uint8_t read_cap_id(void);
 int read_amplitude(void);
 int read_frequency(void);
 int read_pulse_duration(void);
+int read_stim_mode(void);
+int read_burst_period_ms(void);
+int read_intra_burst_freq_hz(void);
+int read_burst_duration_ms(void);
 
 // Stimulation Control Functions
 void start_stimulation(void);
