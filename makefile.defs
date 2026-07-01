@@ -1,0 +1,42 @@
+################################################################################
+# Studio sometimes regenerates a truncated GNU makefile that only lists app and
+# autogen sources. Pull in the Gecko SDK subdir.mk files here (included from
+# the build makefile after sources.mk).
+################################################################################
+
+-include gecko_sdk_4.4.1/util/third_party/mbedtls/library/subdir.mk
+-include gecko_sdk_4.4.1/util/silicon_labs/silabs_core/memory_manager/subdir.mk
+-include gecko_sdk_4.4.1/protocol/bluetooth/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/service/system/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/service/sleeptimer/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/service/power_manager/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/service/mpu/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/service/device_init/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/security/sl_component/sl_psa_driver/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/security/sl_component/sl_protocol_crypto/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/security/sl_component/sl_mbedtls_support/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/security/sl_component/sl_cryptoacc_library/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/security/sl_component/se_manager/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/radio/rail_lib/plugin/rail_util_pti/subdir.mk
+-include gecko_sdk_4.4.1/platform/radio/rail_lib/plugin/rail_util_power_manager_init/subdir.mk
+-include gecko_sdk_4.4.1/platform/radio/rail_lib/plugin/pa-conversions/subdir.mk
+-include gecko_sdk_4.4.1/platform/radio/rail_lib/plugin/fem_util/subdir.mk
+-include gecko_sdk_4.4.1/platform/emlib/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/emdrv/spidrv/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/emdrv/nvm3/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/emdrv/dmadrv/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/driver/leddrv/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/common/toolchain/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/common/src/subdir.mk
+-include gecko_sdk_4.4.1/platform/bootloader/app_properties/subdir.mk
+-include gecko_sdk_4.4.1/platform/bootloader/api/subdir.mk
+-include gecko_sdk_4.4.1/platform/Device/SiliconLabs/BGM22/Source/subdir.mk
+-include gecko_sdk_4.4.1/app/common/util/app_timer/subdir.mk
+-include gecko_sdk_4.4.1/app/bluetooth/common/in_place_ota_dfu/subdir.mk
+
+# Studio's generated makefile includes C_DEPS before makefile.defs; pick up SDK deps.
+ifneq ($(MAKECMDGOALS),clean)
+ifneq ($(strip $(C_DEPS)),)
+-include $(C_DEPS)
+endif
+endif

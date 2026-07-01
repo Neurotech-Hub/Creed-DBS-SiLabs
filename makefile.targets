@@ -1,0 +1,32 @@
+################################################################################
+# Override Studio's truncated link line (hardcoded .o list missing startup/SDK).
+################################################################################
+
+LINKER_SCRIPT := ../autogen/linkerfile.ld
+
+Creed_DBS_app.axf: $(OBJS) $(USER_OBJS) makefile objects.mk $(OPTIONAL_TOOL_DEPS)
+	@echo 'Building target: $@'
+	@echo 'Invoking: GNU ARM C Linker'
+	arm-none-eabi-gcc -g -gdwarf-2 -mcpu=cortex-m33 -mthumb -T "$(LINKER_SCRIPT)" -Wl,--no-warn-rwx-segments -Xlinker --gc-sections -Xlinker -Map="Creed_DBS_app.map" -mfpu=fpv5-sp-d16 -mfloat-abi=hard --specs=nano.specs -o Creed_DBS_app.axf -Wl,--start-group $(OBJS) $(USER_OBJS) $(LIBS) -Wl,--end-group -Wl,--start-group -lgcc -lc -lnosys -Wl,--end-group
+	@echo 'Finished building target: $@'
+	@echo ' '
+
+	@echo 'Building out file: Creed_DBS_app.out'
+	arm-none-eabi-objcopy "Creed_DBS_app.axf" "Creed_DBS_app.out"
+	@echo ' '
+
+	@echo 'Building hex file: Creed_DBS_app.hex'
+	arm-none-eabi-objcopy -O ihex "Creed_DBS_app.axf" "Creed_DBS_app.hex"
+	@echo ' '
+
+	@echo 'Building bin file: Creed_DBS_app.bin'
+	arm-none-eabi-objcopy -O binary "Creed_DBS_app.axf" "Creed_DBS_app.bin"
+	@echo ' '
+
+	@echo 'Building s37 file: Creed_DBS_app.s37'
+	arm-none-eabi-objcopy -O srec "Creed_DBS_app.axf" "Creed_DBS_app.s37"
+	@echo ' '
+
+	@echo 'Running size tool'
+	arm-none-eabi-size "Creed_DBS_app.axf" -A
+	@echo ' '
