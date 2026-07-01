@@ -35,7 +35,6 @@ void spidrv_app_init(void);
 void setTxBufferGain(void);
 void setTxBufferVolts(float outputVolts);
 void transferTxBuffer(void);
-void delay_microseconds(uint32_t us);
 
 // BLE Command Functions
 void handleNodeRxChange(uint8_t *data, size_t len);

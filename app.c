@@ -37,6 +37,7 @@
 #define CHARGE_BALANCE_OFFSET_US 36 // empirical
 #define ADV_INTERVAL_MS 2000
 sl_sleeptimer_timer_handle_t timer_stimulation;	   // based on frequency
+sl_sleeptimer_timer_handle_t timer_op_amp_settle;  // op-amp settle before electrode enable
 sl_sleeptimer_timer_handle_t timer_pulse;		   // based on amplitude
 sl_sleeptimer_timer_handle_t timer_charge_balance; // balance amplitude
 
@@ -73,7 +74,6 @@ void compileCommandString(char *commandStr);
 void setTxBufferGain(void);
 void setTxBufferVolts(float outputVolts);
 void transferTxBuffer(void);
-void delay_microseconds(uint32_t us);
 
 // SPI/DAC
 #define SPI_HANDLE sl_spidrv_inst_handle
@@ -260,35 +260,46 @@ void transferTxBuffer(void)
 	EFM_ASSERT(ecode == ECODE_OK);
 }
 
-void delay_microseconds(uint32_t us)
-{
-	// Convert microseconds to timer ticks
-	uint32_t ticks = (us * sl_sleeptimer_get_timer_frequency()) / 1000000;
-
-	// Get the current tick count
-	uint32_t start_tick = sl_sleeptimer_get_tick_count();
-
-	// Wait until the specified number of ticks have passed
-	while ((sl_sleeptimer_get_tick_count() - start_tick) < ticks)
-	{
-		// Do nothing, just wait
-	}
-}
-
 static void enable_charge_balancing(void)
 {
 	float chargeBalanceVolts = calcChargeBalanceVolts();
 	setTxBufferVolts(chargeBalanceVolts);
 }
 
+static uint32_t getPulseDurationTicks(uint32_t pulse_duration_us)
+{
+	uint32_t timer_frequency = sl_sleeptimer_get_timer_frequency();
+	return (pulse_duration_us * timer_frequency) / 1000000;
+}
+
+static void on_pulse_timeout(sl_sleeptimer_timer_handle_t *handle, void *data);
+
+static void on_op_amp_settled(sl_sleeptimer_timer_handle_t *handle, void *data);
+
 static void enable_stimulation_output(void)
 {
 	float stimVolts = calcStimVolts();
 	GPIO_PinOutSet(SHDN_PORT, SHDN_PIN);
 	setTxBufferVolts(stimVolts);
-	delay_microseconds(SLEEP_TIMER_TICK_US * OP_AMP_INIT_TICKS);
+	sl_sleeptimer_start_timer(&timer_op_amp_settle, OP_AMP_INIT_TICKS,
+							  on_op_amp_settled, NULL, 0, 0);
+}
+
+static void on_op_amp_settled(sl_sleeptimer_timer_handle_t *handle, void *data)
+{
+	(void)handle;
+	(void)data;
+
 	GPIO_PinOutSet(ELEC0_OUT_PORT, ELEC0_OUT_PIN);
 	GPIO_PinOutSet(ELEC1_OUT_PORT, ELEC1_OUT_PIN);
+
+	uint32_t nonzero_pulse_duration =
+		(pulse_duration > STIM_OFFSET_US) ? (pulse_duration - STIM_OFFSET_US) : 0;
+	uint32_t pulse_duration_ticks = getPulseDurationTicks(
+		nonzero_pulse_duration);
+
+	sl_sleeptimer_start_timer(&timer_pulse, pulse_duration_ticks,
+							  on_pulse_timeout, NULL, 0, 0);
 }
 
 static void disable_output(void)
@@ -305,14 +316,6 @@ static void on_charge_balance_timeout(sl_sleeptimer_timer_handle_t *handle,
 	(void)handle;
 	(void)data;
 	disable_output(); // Disable output after charge balancing
-}
-
-static uint32_t getPulseDurationTicks(uint32_t pulse_duration)
-{
-	// Calculate the number of ticks for pulse_duration in µs
-	uint32_t timer_frequency = sl_sleeptimer_get_timer_frequency();
-	uint32_t pulse_duration_ticks = (pulse_duration * timer_frequency) / 1000000;
-	return pulse_duration_ticks;
 }
 
 static void on_pulse_timeout(sl_sleeptimer_timer_handle_t *handle, void *data)
@@ -339,16 +342,7 @@ static void on_stimulation_timeout(sl_sleeptimer_timer_handle_t *handle,
 	(void)handle;
 	(void)data;
 
-	enable_stimulation_output(); // Start the stimulation pulse
-
-	uint32_t nonzero_pulse_duration =
-		(pulse_duration > STIM_OFFSET_US) ? (pulse_duration - STIM_OFFSET_US) : 0;
-	uint32_t pulse_duration_ticks = getPulseDurationTicks(
-		nonzero_pulse_duration);
-
-	// Start the pulse timer
-	sl_sleeptimer_start_timer(&timer_pulse, pulse_duration_ticks,
-							  on_pulse_timeout, NULL, 0, 0);
+	enable_stimulation_output();
 }
 
 void start_stimulation(void)
@@ -372,6 +366,7 @@ void stop_stimulation(void)
 {
 	// Stop the stimulation timer
 	sl_sleeptimer_stop_timer(&timer_stimulation);
+	sl_sleeptimer_stop_timer(&timer_op_amp_settle);
 	// Stop the pulse timer if running
 	sl_sleeptimer_stop_timer(&timer_pulse);
 	// Stop the charge balancing timer if running
