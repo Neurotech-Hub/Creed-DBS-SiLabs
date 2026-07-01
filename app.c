@@ -53,8 +53,10 @@ sl_sleeptimer_timer_handle_t timer_charge_balance; // balance amplitude
 uint8_t cap_id;
 
 // BLE
-#define COMMAND_STR_MAX_SIZE 20 // Maximum possible MTU size
+#define ATT_MTU_MAX 247 // Max ATT MTU (payload per packet = MTU - 3)
+#define COMMAND_STR_MAX_SIZE 128 // node_rx/node_tx value size; fits one ATT PDU after MTU exchange
 static uint8_t advertising_set_handle = 0xff;
+static uint16_t negotiated_mtu = 23; // updated on sl_bt_evt_gatt_mtu_exchanged
 char commandStr[COMMAND_STR_MAX_SIZE];
 #define APP_BUFFER_SIZE 3
 uint8_t rx_buffer[APP_BUFFER_SIZE];
@@ -456,6 +458,13 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
 		sc = sl_bt_system_set_tx_power(0, 0, &pwr_min, &pwr_max);
 		app_assert_status(sc);
 
+		// Allow large ATT payloads; stack requests MTU exchange on connect when > 23
+		{
+			uint16_t max_mtu_out;
+			sc = sl_bt_gatt_server_set_max_mtu(ATT_MTU_MAX, &max_mtu_out);
+			app_assert_status(sc);
+		}
+
 		// Create an advertising set.
 		sc = sl_bt_advertiser_create_set(&advertising_set_handle);
 		app_assert_status(sc);
@@ -511,8 +520,9 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
 			{
 				handleNodeRxChange(buffer, len);  // This updates txCharSwitch
 				compileCommandString(commandStr); // This uses the updated txCharSwitch
+				size_t tx_len = strlen(commandStr);
 				sc = sl_bt_gatt_server_write_attribute_value(
-					gattdb_node_tx, 0, sizeof(commandStr), (uint8_t *)commandStr);
+					gattdb_node_tx, 0, tx_len, (uint8_t *)commandStr);
 			}
 			else
 			{
@@ -528,6 +538,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
 		break;
 
 	case sl_bt_evt_gatt_mtu_exchanged_id:
+		negotiated_mtu = evt->data.evt_gatt_mtu_exchanged.mtu;
 		break;
 
 		///////////////////////////////////////////////////////////////////////////
