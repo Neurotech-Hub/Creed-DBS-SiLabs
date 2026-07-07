@@ -39,6 +39,7 @@ component:
 - {id: bootloader_interface}
 - {id: bt_post_build}
 - {id: component_catalog}
+- {id: device_init_lfrco}
 - {id: gatt_configuration}
 - {id: gatt_service_device_information}
 - {id: in_place_ota_dfu}

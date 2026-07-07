@@ -1,5 +1,31 @@
 # SoC - Empty
 
+> **WARNING — stale committed binaries:** the `.gbl` files in `output_gbl/` were
+> committed once at `008e60f` (pre-mouseStim8.1) and never updated. They were
+> built with the **old pinout** (PC03=SHDN, PD02/PD03=ELEC, PB00=MAG) and must
+> NOT be flashed onto current mouseStim8.1 hardware. The Studio build/debug
+> buttons do not regenerate them; only the `create_bl_files.*` scripts do.
+
+> **Power debug (Jul 2026):** `config/sl_power_manager_config.h` has
+> `SL_POWER_MANAGER_DEBUG=1` to trace EM1/EM2 requirement owners while
+> investigating ~4.2 mA idle draw, and `config/sl_device_init_emu_config.h`
+> sets `SL_DEVICE_INIT_EMU_EM2_DEBUG_ENABLE=0` (debugger cannot follow into
+> EM2, but EM2 sleep current is lower). To inspect requirements in a debug
+> session, pause and view `requirement_em_table` (EM1/EM2 counters) in
+> `sl_power_manager.c` and `power_manager_debug_requirement_em_table` (owner
+> names) in `sl_power_manager_debug.c`, or call
+> `sl_power_manager_debug_print_em_requirements()` from the app.
+>
+> **Root cause found:** a permanent EM1 requirement (holder: BLE stack). When
+> the project was reconstructed after Studio trashed config/autogen, the
+> `device_init_lfrco` component was lost, so `sl_device_init_lfrco()` (LFRCO
+> high-precision mode) never ran. With `bluetooth_feature_connection` present,
+> the stack requires an accurate LF sleep clock for EM2 (see
+> `config/sl_bluetooth_config.h`, `BT_EM2_LFCLK_REQ_FLAG`) and otherwise pins
+> the system at EM1 (~+2 mA). Fix: `device_init_lfrco` re-added to the .slcp
+> (Jul 2026); regenerate + full rebuild so `autogen/sl_event_handler.c` calls
+> `sl_device_init_lfrco()`.
+
 The Bluetooth SoC-Empty example is a project that you can use as a template for any standalone Bluetooth application.
 
 > Note: this example expects a specific Gecko Bootloader to be present on your device. For details see the Troubleshooting section.
