@@ -2,7 +2,14 @@
 # Studio sometimes regenerates a truncated GNU makefile that only lists app and
 # autogen sources. Pull in the Gecko SDK subdir.mk files here (included from
 # the build makefile after sources.mk).
+#
+# Guard: when SLC generation succeeds, the generated makefile already includes
+# these subdir.mk files, and including them twice duplicates every object in
+# OBJS (multiple-definition link errors). Only patch when OBJS is missing the
+# SDK startup file, i.e. the makefile is actually truncated.
 ################################################################################
+
+ifeq ($(filter %startup_bgm22.o,$(OBJS)),)
 
 -include gecko_sdk_4.4.1/util/third_party/mbedtls/library/subdir.mk
 -include gecko_sdk_4.4.1/util/silicon_labs/silabs_core/memory_manager/subdir.mk
@@ -40,3 +47,5 @@ ifneq ($(strip $(C_DEPS)),)
 -include $(C_DEPS)
 endif
 endif
+
+endif # truncated-makefile guard

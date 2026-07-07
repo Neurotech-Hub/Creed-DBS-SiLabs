@@ -29,11 +29,15 @@ Release/
 build/
 *.jlink
 
-# Simplicity Studio generated files and build directory
+# Simplicity Studio caches and build directory.
+# NOTE (Jul 2026): autogen/ and config/ are now TRACKED. They were previously
+# ignored, which made the project unrecoverable when Studio trashed them:
+# the regenerated project silently lost the device_init_lfrco component
+# (BLE stack pinned EM1, ~4.2 mA idle instead of ~1.6 mA) and the linkerfile
+# lost its AppLoader offset (app linked at 0x0, clobbering the bootloader).
+# Tracking them makes regeneration diffs visible and recovery possible.
 .pdm/
 .uceditor/
-autogen/
-/config/
 GNU*/
 
 # Ignore assets that were part of the project
@@ -43,6 +47,3 @@ image/
 # Misc
 .DS_Store
 Thumbs.db
-
-# Include specific files
-!autogen/linkerfile.ld

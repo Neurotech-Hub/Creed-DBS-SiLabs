@@ -75,9 +75,12 @@ sl_sleeptimer_timer_handle_t timer_burst_duration; // burst mode: length of each
 #define CAP_ID_MIN 0
 #define CAP_ID_MAX 99
 
-// MouseCap firmware version (wire = major×10 + minor; FW1 = v0.1)
+// MouseCap firmware version (wire = major×10 + minor; FW2 = v0.2)
+// v0.2: restored device_init_lfrco (EM2 sleep fix, ~4.2 mA -> ~1.6 mA idle)
+//       and correct AppLoader flash layout (app at 0x12000). FW2 on the wire
+//       identifies devices flashed with the fixed build.
 #define FIRMWARE_VERSION_MAJOR 0
-#define FIRMWARE_VERSION_MINOR 1
+#define FIRMWARE_VERSION_MINOR 2
 #define FIRMWARE_VERSION_WIRE ((FIRMWARE_VERSION_MAJOR * 10) + FIRMWARE_VERSION_MINOR)
 
 uint8_t cap_id;

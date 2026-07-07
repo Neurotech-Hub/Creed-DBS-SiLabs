@@ -6,25 +6,52 @@
 > NOT be flashed onto current mouseStim8.1 hardware. The Studio build/debug
 > buttons do not regenerate them; only the `create_bl_files.*` scripts do.
 
-> **Power debug (Jul 2026):** `config/sl_power_manager_config.h` has
-> `SL_POWER_MANAGER_DEBUG=1` to trace EM1/EM2 requirement owners while
-> investigating ~4.2 mA idle draw, and `config/sl_device_init_emu_config.h`
-> sets `SL_DEVICE_INIT_EMU_EM2_DEBUG_ENABLE=0` (debugger cannot follow into
-> EM2, but EM2 sleep current is lower). To inspect requirements in a debug
-> session, pause and view `requirement_em_table` (EM1/EM2 counters) in
-> `sl_power_manager.c` and `power_manager_debug_requirement_em_table` (owner
-> names) in `sl_power_manager_debug.c`, or call
-> `sl_power_manager_debug_print_em_requirements()` from the app.
->
-> **Root cause found:** a permanent EM1 requirement (holder: BLE stack). When
-> the project was reconstructed after Studio trashed config/autogen, the
-> `device_init_lfrco` component was lost, so `sl_device_init_lfrco()` (LFRCO
-> high-precision mode) never ran. With `bluetooth_feature_connection` present,
-> the stack requires an accurate LF sleep clock for EM2 (see
-> `config/sl_bluetooth_config.h`, `BT_EM2_LFCLK_REQ_FLAG`) and otherwise pins
-> the system at EM1 (~+2 mA). Fix: `device_init_lfrco` re-added to the .slcp
-> (Jul 2026); regenerate + full rebuild so `autogen/sl_event_handler.c` calls
-> `sl_device_init_lfrco()`.
+## Power regression post-mortem (Jul 2026) — RESOLVED
+
+Symptom: ~4.2 mA idle at cold boot on every firmware version, vs ~1.5-1.9 mA
+on validated field units with identical hardware. Fixed: **~1.58 mA at boot**
+with firmware v0.2 (`FW2` on the wire identifies fixed devices).
+
+Two independent regressions were introduced when the Studio project was
+reconstructed after config/autogen were trashed (both files were gitignored,
+so the losses were invisible):
+
+1. **Missing `device_init_lfrco` component** (the ~2 mA). The BGM220SC22HNA is
+   crystal-less for the LF domain; `sl_device_init_lfrco()` enables LFRCO
+   high-precision mode. Without it, and with `bluetooth_feature_connection`
+   present, the BLE stack deems the sleep clock inaccurate and holds a
+   permanent EM1 requirement — EM2 is never entered (see
+   `config/sl_bluetooth_config.h`, `BT_EM2_LFCLK_REQ_FLAG`). Diagnosed by
+   setting `SL_POWER_MANAGER_DEBUG=1` in `config/sl_power_manager_config.h`
+   and inspecting `requirement_em_table` (EM1/EM2 counters in
+   `sl_power_manager.c`) in a debug session: EM1 count was pinned at 1.
+   Fix: `device_init_lfrco` re-added to the `.slcp`.
+
+2. **Wrong linker origin.** The reconstructed `autogen/linkerfile.ld` had
+   `FLASH ORIGIN = 0x0` (no bootloader offset), so builds ran standalone at
+   0x0, silently clobbering the bootloader. Regeneration restored the correct
+   AppLoader layout: `ORIGIN = 0x12000` (bootloader 0x0-0x6000, AppLoader
+   0x6000-0x12000, app 0x12000+).
+
+### Flashing requirements (production layout)
+
+1. Mass-erase, then flash the **Bluetooth AppLoader OTA DFU** bootloader.
+2. Flash the app (`Creed_DBS_app.hex`/`.s37`, linked at 0x12000).
+3. Boot chain: bootloader -> AppLoader -> app. Do not flash app-only onto an
+   erased chip and expect OTA to work.
+
+### Related build-system notes
+
+- `SL_DEVICE_INIT_EMU_EM2_DEBUG_ENABLE=0` in `config/sl_device_init_emu_config.h`
+  (production power; set to 1 only if a debug session must survive EM2 entry —
+  the session dropping at sleep is EM2 working).
+- `makefile.defs` contains a guard that only patches in SDK `subdir.mk` files
+  when Studio generates a truncated makefile (detected via missing
+  `startup_bgm22.o` in `OBJS`). Never include them unconditionally: a healthy
+  generation already lists them, and double inclusion links every object twice
+  (multiple-definition errors + phantom RAM overflow).
+- `autogen/` and `config/` are now git-tracked (see `.gitignore`) so future
+  regenerations show up as diffs instead of silent losses.
 
 The Bluetooth SoC-Empty example is a project that you can use as a template for any standalone Bluetooth application.
 
