@@ -75,12 +75,10 @@ sl_sleeptimer_timer_handle_t timer_burst_duration; // burst mode: length of each
 #define CAP_ID_MIN 0
 #define CAP_ID_MAX 99
 
-// MouseCap firmware version (wire = major×10 + minor; FW2 = v0.2)
-// v0.2: restored device_init_lfrco (EM2 sleep fix, ~4.2 mA -> ~1.6 mA idle)
-//       and correct AppLoader flash layout (app at 0x12000). FW2 on the wire
-//       identifies devices flashed with the fixed build.
+// MouseCap firmware version (wire = major×10 + minor; FW4 = v0.4)
+// v0.4: Ready-to-connect UX — adv on boot, 1 Hz = ready, 10 s heartbeat when stim only.
 #define FIRMWARE_VERSION_MAJOR 0
-#define FIRMWARE_VERSION_MINOR 2
+#define FIRMWARE_VERSION_MINOR 4
 #define FIRMWARE_VERSION_WIRE ((FIRMWARE_VERSION_MAJOR * 10) + FIRMWARE_VERSION_MINOR)
 
 uint8_t cap_id;
@@ -122,16 +120,46 @@ static const uint16_t maxADCValue = 65535;
 // Add near other global variables
 static bool advertising_enabled = false;
 
-// Add near other defines at top
-#define LED_FLASH_INTERVAL_MS 2000 // Flash every 2 seconds during advertising
-#define LED_FLASH_DURATION_MS 50   // Flash duration of 50ms
+// LED regimes: ready 1 Hz chirp, connected solid ON, stim 10 s heartbeat only
+typedef enum {
+	LED_REGIME_READY,
+	LED_REGIME_CONNECTED,
+	LED_REGIME_STIM,
+} led_regime_t;
 
-// Add near other global variables
-static sl_sleeptimer_timer_handle_t led_flash_timer;
-static bool led_is_flashing = false;
+#define LED_BOOT_CHIRP_INTERVAL_MS       1000
+#define LED_BOOT_CHIRP_DURATION_MS       50
+#define LED_STIM_HEARTBEAT_INTERVAL_MS   10000
+#define LED_STIM_HEARTBEAT_DURATION_MS   50
+#define LED_STIM_HEARTBEAT_DEFER_MS      10
+#define LED_STIM_HEARTBEAT_DEFER_MAX_MS  200
+
+static led_regime_t led_regime = LED_REGIME_READY;
+static bool ble_connected = false;
+static bool advertising_active = false;
+static bool led_user_on = true;
+static bool led_chirp_phase_on = false;
+static bool led_stim_pulse_active = false;
+static bool led_stim_heartbeat_active = false;
+static uint32_t led_stim_defer_accum_ms = 0;
+
+static sl_sleeptimer_timer_handle_t led_chirp_timer;
+static sl_sleeptimer_timer_handle_t led_stim_timer;
+
+static void led_apply_output(bool on);
+static void led_refresh(void);
+static void led_set_regime(led_regime_t regime);
+static void led_enter_stim_idle(void);
+static void led_update_stim_heartbeat(void);
+static void enter_ready_to_connect(void);
+static void on_magnet_detected(void);
+static bool stim_chain_busy(void);
+static void led_stim_heartbeat_start(void);
+static void led_stim_heartbeat_stop(void);
+static void on_led_boot_chirp_timeout(sl_sleeptimer_timer_handle_t *handle, void *data);
+static void on_led_stim_heartbeat_timeout(sl_sleeptimer_timer_handle_t *handle, void *data);
 
 void gpio_init(void);
-static void on_led_flash_timeout(sl_sleeptimer_timer_handle_t *handle, void *data);
 
 #define IADC_REFERENCE_VOLTAGE 3.3f
 
@@ -554,10 +582,28 @@ void start_stimulation(void)
 	{
 		start_burst_cycle();
 	}
+	led_update_stim_heartbeat();
+}
+
+static void start_advertising(void)
+{
+	if (advertising_set_handle == 0xff)
+	{
+		return;
+	}
+
+	sl_status_t sc = sl_bt_legacy_advertiser_start(advertising_set_handle,
+												   sl_bt_legacy_advertiser_connectable);
+	app_assert_status(sc);
+	if (sc == SL_STATUS_OK)
+	{
+		advertising_active = true;
+	}
 }
 
 void stop_stimulation(void)
 {
+	led_stim_heartbeat_stop();
 	sl_sleeptimer_stop_timer(&timer_burst_period);
 	sl_sleeptimer_stop_timer(&timer_burst_duration);
 	stop_pulse_chain();
@@ -605,8 +651,7 @@ SL_WEAK void app_init(void)
 	gpio_init();
 	iadc_init();
 
-	// Ensure LED starts off
-	sl_led_turn_off(LED0);
+	led_set_regime(LED_REGIME_READY);
 }
 
 /**************************************************************************/ /**
@@ -624,21 +669,7 @@ SL_WEAK void app_process_action(void)
 	if (advertising_enabled && advertising_set_handle != 0xff)
 	{
 		advertising_enabled = false;
-
-		// Start advertising
-		sl_status_t sc = sl_bt_legacy_advertiser_start(advertising_set_handle,
-													   sl_bt_legacy_advertiser_connectable);
-
-		app_assert_status(sc);
-
-		// Start LED flashing
-		led_is_flashing = true;
-		sl_sleeptimer_start_timer_ms(&led_flash_timer,
-									 LED_FLASH_INTERVAL_MS,
-									 on_led_flash_timeout,
-									 NULL,
-									 0,
-									 0);
+		start_advertising();
 	}
 }
 
@@ -687,26 +718,33 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
 										 0);
 		app_assert_status(sc);
 
-		// Don't start advertising yet - wait for MAG_PIN interrupt
+		// Start advertising immediately — 1 Hz chirp means ready to connect
+		start_advertising();
 		break;
 
 		// -------------------------------
 		// This event indicates that a new connection was opened.
 	case sl_bt_evt_connection_opened_id:
+		advertising_active = false;
+		ble_connected = true;
+		led_user_on = true;
+		led_set_regime(LED_REGIME_CONNECTED);
+		led_update_stim_heartbeat();
 		break;
 
 		// -------------------------------
 		// This event indicates that a connection was closed.
 	case sl_bt_evt_connection_closed_id:
-		// Stop LED flashing
-		sl_sleeptimer_stop_timer(&led_flash_timer);
-		sl_led_turn_off(LED0);
-
+		ble_connected = false;
 		if (activateStim)
 		{
+			led_enter_stim_idle();
 			start_stimulation();
 		}
-		// No else needed - we'll wait for magnet to re-enable advertising
+		else
+		{
+			enter_ready_to_connect();
+		}
 		break;
 
 		// -------------------------------
@@ -880,9 +918,10 @@ static void apply_param(const char *key, int value)
 	}
 	else if (strcmp(key, "L") == 0)
 	{
-		if (value)
+		if (value && ble_connected)
 		{
-			sl_led_toggle(LED0);
+			led_user_on = !led_user_on;
+			led_refresh();
 		}
 	}
 	// FW is read-only (device → app); ignore if received
@@ -928,7 +967,11 @@ void handleNodeRxChange(uint8_t *data, size_t len)
 	}
 	if (len == 3 && data[1] == 'L' && data[2] == '1')
 	{
-		sl_led_toggle(LED0);
+		if (ble_connected)
+		{
+			led_user_on = !led_user_on;
+			led_refresh();
+		}
 		return;
 	}
 
@@ -962,6 +1005,247 @@ void handleNodeRxChange(uint8_t *data, size_t len)
 	}
 }
 
+static void led_apply_output(bool on)
+{
+	if (on)
+	{
+		sl_led_turn_on(LED0);
+	}
+	else
+	{
+		sl_led_turn_off(LED0);
+	}
+}
+
+static bool stim_chain_busy(void)
+{
+	bool running = false;
+
+	if (sl_sleeptimer_is_timer_running(&timer_op_amp_settle, &running) == SL_STATUS_OK
+		&& running)
+	{
+		return true;
+	}
+	if (sl_sleeptimer_is_timer_running(&timer_pulse, &running) == SL_STATUS_OK
+		&& running)
+	{
+		return true;
+	}
+	if (sl_sleeptimer_is_timer_running(&timer_charge_balance, &running) == SL_STATUS_OK
+		&& running)
+	{
+		return true;
+	}
+	return false;
+}
+
+static void led_refresh(void)
+{
+	if (led_regime == LED_REGIME_CONNECTED)
+	{
+		led_apply_output(led_user_on);
+	}
+}
+
+static void led_stop_boot_chirp(void)
+{
+	sl_sleeptimer_stop_timer(&led_chirp_timer);
+	led_chirp_phase_on = false;
+}
+
+static void led_start_boot_chirp(void)
+{
+	led_stop_boot_chirp();
+	led_chirp_phase_on = true;
+	sl_sleeptimer_start_timer_ms(&led_chirp_timer,
+								 LED_BOOT_CHIRP_INTERVAL_MS,
+								 on_led_boot_chirp_timeout,
+								 NULL,
+								 0,
+								 0);
+}
+
+static void led_set_regime(led_regime_t regime)
+{
+	led_regime = regime;
+	led_stop_boot_chirp();
+
+	if (regime == LED_REGIME_READY)
+	{
+		led_apply_output(false);
+		led_start_boot_chirp();
+	}
+	else if (regime == LED_REGIME_STIM)
+	{
+		led_apply_output(false);
+	}
+	else
+	{
+		led_refresh();
+	}
+}
+
+static void led_update_stim_heartbeat(void)
+{
+	if (activateStim && !advertising_active && led_regime != LED_REGIME_READY)
+	{
+		led_stim_heartbeat_start();
+	}
+	else
+	{
+		led_stim_heartbeat_stop();
+	}
+}
+
+static void led_enter_stim_idle(void)
+{
+	led_stop_boot_chirp();
+	led_apply_output(false);
+	led_regime = LED_REGIME_STIM;
+	advertising_active = false;
+	led_update_stim_heartbeat();
+}
+
+static void enter_ready_to_connect(void)
+{
+	advertising_enabled = true;
+	led_stim_heartbeat_stop();
+	led_set_regime(LED_REGIME_READY);
+}
+
+static void on_magnet_detected(void)
+{
+	enter_ready_to_connect();
+}
+
+static void on_led_boot_chirp_timeout(sl_sleeptimer_timer_handle_t *handle, void *data)
+{
+	(void)handle;
+	(void)data;
+
+	if (led_regime != LED_REGIME_READY || led_stim_pulse_active)
+	{
+		return;
+	}
+
+	if (led_chirp_phase_on)
+	{
+		led_apply_output(true);
+		led_chirp_phase_on = false;
+		sl_sleeptimer_start_timer_ms(&led_chirp_timer,
+									 LED_BOOT_CHIRP_DURATION_MS,
+									 on_led_boot_chirp_timeout,
+									 NULL,
+									 0,
+									 0);
+	}
+	else
+	{
+		led_apply_output(false);
+		led_chirp_phase_on = true;
+		sl_sleeptimer_start_timer_ms(&led_chirp_timer,
+									 LED_BOOT_CHIRP_INTERVAL_MS,
+									 on_led_boot_chirp_timeout,
+									 NULL,
+									 0,
+									 0);
+	}
+}
+
+static void led_stim_heartbeat_stop(void)
+{
+	led_stim_heartbeat_active = false;
+	led_stim_pulse_active = false;
+	led_stim_defer_accum_ms = 0;
+	sl_sleeptimer_stop_timer(&led_stim_timer);
+	if (led_regime == LED_REGIME_CONNECTED)
+	{
+		led_refresh();
+	}
+	else
+	{
+		led_apply_output(false);
+	}
+}
+
+static void led_stim_heartbeat_start(void)
+{
+	if (led_stim_heartbeat_active)
+	{
+		return;
+	}
+	led_stim_heartbeat_active = true;
+	led_stim_pulse_active = false;
+	led_stim_defer_accum_ms = 0;
+	sl_sleeptimer_start_timer_ms(&led_stim_timer,
+								 LED_STIM_HEARTBEAT_INTERVAL_MS,
+								 on_led_stim_heartbeat_timeout,
+								 NULL,
+								 0,
+								 0);
+}
+
+static void on_led_stim_heartbeat_timeout(sl_sleeptimer_timer_handle_t *handle, void *data)
+{
+	(void)handle;
+	(void)data;
+
+	if (!led_stim_heartbeat_active)
+	{
+		return;
+	}
+
+	if (led_stim_pulse_active)
+	{
+		led_stim_pulse_active = false;
+		if (led_regime == LED_REGIME_CONNECTED)
+		{
+			led_refresh();
+		}
+		else
+		{
+			led_apply_output(false);
+		}
+		sl_sleeptimer_start_timer_ms(&led_stim_timer,
+									 LED_STIM_HEARTBEAT_INTERVAL_MS,
+									 on_led_stim_heartbeat_timeout,
+									 NULL,
+									 0,
+									 0);
+		return;
+	}
+
+	if (stim_chain_busy()
+		&& led_stim_defer_accum_ms < LED_STIM_HEARTBEAT_DEFER_MAX_MS)
+	{
+		led_stim_defer_accum_ms += LED_STIM_HEARTBEAT_DEFER_MS;
+		sl_sleeptimer_start_timer_ms(&led_stim_timer,
+									 LED_STIM_HEARTBEAT_DEFER_MS,
+									 on_led_stim_heartbeat_timeout,
+									 NULL,
+									 0,
+									 0);
+		return;
+	}
+	led_stim_defer_accum_ms = 0;
+
+	led_stim_pulse_active = true;
+	if (ble_connected && led_user_on)
+	{
+		led_apply_output(false);
+	}
+	else
+	{
+		led_apply_output(true);
+	}
+	sl_sleeptimer_start_timer_ms(&led_stim_timer,
+								 LED_STIM_HEARTBEAT_DURATION_MS,
+								 on_led_stim_heartbeat_timeout,
+								 NULL,
+								 0,
+								 0);
+}
+
 void gpio_init(void)
 {
 	// Configure interrupt for MAG_PIN with filter
@@ -985,7 +1269,7 @@ void GPIO_EVEN_IRQHandler(void)
 
 	if (flags & (1 << MAG_PIN))
 	{
-		advertising_enabled = true;
+		on_magnet_detected();
 	}
 }
 
@@ -997,41 +1281,7 @@ void GPIO_ODD_IRQHandler(void)
 
 	if (flags & (1 << MAG_PIN))
 	{
-		advertising_enabled = true;
-	}
-}
-
-static void on_led_flash_timeout(sl_sleeptimer_timer_handle_t *handle, void *data)
-{
-	(void)handle;
-	(void)data;
-
-	if (led_is_flashing)
-	{
-		sl_led_turn_on(LED0);
-		// Schedule LED turn off
-		sl_sleeptimer_start_timer_ms(&led_flash_timer,
-									 LED_FLASH_DURATION_MS,
-									 on_led_flash_timeout,
-									 NULL,
-									 0,
-									 0);
-		led_is_flashing = false;
-	}
-	else
-	{
-		sl_led_turn_off(LED0);
-		// Schedule next flash if still advertising
-		if (advertising_set_handle != 0xff)
-		{
-			sl_sleeptimer_start_timer_ms(&led_flash_timer,
-										 LED_FLASH_INTERVAL_MS,
-										 on_led_flash_timeout,
-										 NULL,
-										 0,
-										 0);
-			led_is_flashing = true;
-		}
+		on_magnet_detected();
 	}
 }
 

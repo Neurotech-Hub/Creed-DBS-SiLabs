@@ -53,6 +53,24 @@ so the losses were invisible):
 - `autogen/` and `config/` are now git-tracked (see `.gitignore`) so future
   regenerations show up as diffs instead of silent losses.
 
+## Ready-to-connect BLE and LED (v0.4 / `FW4`)
+
+| Mode | Advertising | LED | When |
+| --- | --- | --- | --- |
+| **ReadyToConnect** | ON | 1 Hz chirp (50 ms) | Boot, disconnect without stim, magnet swipe (incl. during stim) |
+| **Connected** | (stack stops adv) | Solid ON (`L` toggles) | BLE connected |
+| **Stimulating** | OFF (until magnet) | ~10 s heartbeat only | `G=1` / active output; adv off until magnet or disconnect `G=0` |
+
+1 Hz ready chirp and 10 s stim heartbeat are mutually exclusive. Magnet during
+stimulation does **not** stop pulse output — it only re-enables advertising and
+switches the LED to 1 Hz (10 s heartbeat halted).
+
+### FUTURE: shelf mode
+
+Shelf mode (not implemented): radio off, LED off, zero advertising. A magnet
+swipe is the only wake into ReadyToConnect. The GPIO magnet ISR is the natural
+entry point for that behavior.
+
 The Bluetooth SoC-Empty example is a project that you can use as a template for any standalone Bluetooth application.
 
 > Note: this example expects a specific Gecko Bootloader to be present on your device. For details see the Troubleshooting section.
