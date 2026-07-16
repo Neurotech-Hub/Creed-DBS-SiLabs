@@ -445,12 +445,17 @@ static uint32_t getPulseDurationTicks(uint32_t pulse_duration_us)
 
 static void on_pulse_timeout(sl_sleeptimer_timer_handle_t *handle, void *data);
 
-// EM1 requirement held for the entire stim train (start_stimulation ->
-// stop_stimulation). Field-validated units never slept below EM1, so this
-// replicates their timing environment exactly: every sleeptimer edge in the
-// pulse chain fires with EM1 latency, never EM2 wake latency. Temporary
-// power trade-off (~+0.5 mA during stim); revisit tighter windowing once the
-// waveform is validated. Guarded flag keeps add/remove balanced.
+// EM1 A/B: 1 = hold EM1 for the whole stim train (start_stimulation ->
+// stop_stimulation, FW5 behavior; ~1 mA continuous during stim). 0 = hold
+// EM1 only across each pulse chain (enable_stimulation_output ->
+// disable_output) so EM2 re-engages between pulses. In per-pulse mode the
+// pulse ONSET absorbs the EM2 wake latency, but both phase durations
+// (pulse and charge balance) still run entirely under EM1, so widths stay
+// deterministic. Retest 2026-07-16: the waveform "jitter" that motivated
+// the full-train hold turned out to be filter-cap inrush + current-sense
+// placement, not timing, so the tighter window is being re-validated.
+#define STIM_EM1_FULL_TRAIN 0
+// Guarded flag keeps add/remove balanced in both modes.
 static bool em1_requirement_active = false;
 
 static void stim_em1_acquire(void)
@@ -493,6 +498,9 @@ static void enable_stimulation_output(void)
 {
 	float stimVolts = calcStimVolts();
 
+#if !STIM_EM1_FULL_TRAIN
+	stim_em1_acquire();
+#endif
 	GPIO_PinOutSet(SHDN_PORT, SHDN_PIN);
 	// DAC is at refVolts here (zero current): give the amp a generous wake
 	// settle, connect the electrodes at zero, let the switch settle, then
@@ -522,6 +530,9 @@ static void disable_output(void)
 	GPIO_PinOutClear(ELEC1_OUT_PORT, ELEC1_OUT_PIN);
 #if !STIM_HOLD_SHDN
 	GPIO_PinOutClear(SHDN_PORT, SHDN_PIN);
+#endif
+#if !STIM_EM1_FULL_TRAIN
+	stim_em1_release();
 #endif
 }
 
@@ -635,7 +646,9 @@ static void start_burst_cycle(void)
 
 void start_stimulation(void)
 {
+#if STIM_EM1_FULL_TRAIN
 	stim_em1_acquire();
+#endif
 	if (stim_mode == 0)
 	{
 		start_continuous_stimulation();
