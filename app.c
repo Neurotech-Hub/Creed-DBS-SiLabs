@@ -30,14 +30,29 @@
 #include "em_iadc.h"
 #include "em_cmu.h"
 
+#include "sl_power_manager.h"
+
 // TIMING
 #define SLEEP_TIMER_TICK_US 30
-#define OP_AMP_INIT_TICKS 4
-#define STIM_OFFSET_US 93			// empirical
-#define CHARGE_BALANCE_OFFSET_US 36 // empirical
+// Onset coordination, datasheet-grounded values. These busy-waits run in
+// timer IRQ context, so keep them tight: overly generous values (600 µs +
+// 2000 µs diagnostic) starved the BLE stack and dropped connections.
+// LT6020-1 tON = 100 µs typ (datasheet); +50% margin.
+#define OP_AMP_WAKE_SETTLE_US 150
+// ADG1236 tON ~200 ns + charge-injection settle; one sleeptimer tick.
+#define SWITCH_CONNECT_SETTLE_US 30
+// DIAGNOSTIC A/B for the interpulse artifact at SHDN+2 ms: 1 = hold SHDN
+// (LT6020 EN) high across the whole train (amp never shuts down between
+// pulses). If the artifact vanishes, it is the LT6020 shutdown bias
+// wind-down coupling through the open ADG1236. 0 = per-pulse SHDN cycling.
+#define STIM_HOLD_SHDN 0
+// Empirical, recalibrated for FW5 sequencing + 1 MHz SPI (bench 2026-07-16:
+// P=480 µs measured 504/2480 with old offsets 93/36 -> ~117 µs constant
+// per-segment overhead: tick quantization + IRQ latency + DAC write).
+#define STIM_OFFSET_US 117
+#define CHARGE_BALANCE_OFFSET_US 116
 #define ADV_INTERVAL_MS 2000
 sl_sleeptimer_timer_handle_t timer_stimulation;	   // based on frequency / intra-burst rate
-sl_sleeptimer_timer_handle_t timer_op_amp_settle;  // op-amp settle before electrode enable
 sl_sleeptimer_timer_handle_t timer_pulse;		   // based on amplitude
 sl_sleeptimer_timer_handle_t timer_charge_balance; // balance amplitude
 sl_sleeptimer_timer_handle_t timer_burst_period;   // burst mode: time between burst onsets
@@ -75,10 +90,12 @@ sl_sleeptimer_timer_handle_t timer_burst_duration; // burst mode: length of each
 #define CAP_ID_MIN 0
 #define CAP_ID_MAX 99
 
-// MouseCap firmware version (wire = major×10 + minor; FW4 = v0.4)
-// v0.4: Ready-to-connect UX — adv on boot, 1 Hz = ready, 10 s heartbeat when stim only.
+// MouseCap firmware version (wire = major×10 + minor; FW5 = v0.5)
+// v0.5: Deterministic pulse chain — synchronous op-amp settle, EM1 held for
+//       the stim train, zero-current switch transitions, burst boundaries no
+//       longer truncate in-flight pulses.
 #define FIRMWARE_VERSION_MAJOR 0
-#define FIRMWARE_VERSION_MINOR 4
+#define FIRMWARE_VERSION_MINOR 5
 #define FIRMWARE_VERSION_WIRE ((FIRMWARE_VERSION_MAJOR * 10) + FIRMWARE_VERSION_MINOR)
 
 uint8_t cap_id;
@@ -428,24 +445,63 @@ static uint32_t getPulseDurationTicks(uint32_t pulse_duration_us)
 
 static void on_pulse_timeout(sl_sleeptimer_timer_handle_t *handle, void *data);
 
-static void on_op_amp_settled(sl_sleeptimer_timer_handle_t *handle, void *data);
+// EM1 requirement held for the entire stim train (start_stimulation ->
+// stop_stimulation). Field-validated units never slept below EM1, so this
+// replicates their timing environment exactly: every sleeptimer edge in the
+// pulse chain fires with EM1 latency, never EM2 wake latency. Temporary
+// power trade-off (~+0.5 mA during stim); revisit tighter windowing once the
+// waveform is validated. Guarded flag keeps add/remove balanced.
+static bool em1_requirement_active = false;
 
+static void stim_em1_acquire(void)
+{
+	if (!em1_requirement_active)
+	{
+		em1_requirement_active = true;
+		sl_power_manager_add_em_requirement(SL_POWER_MANAGER_EM1);
+	}
+}
+
+static void stim_em1_release(void)
+{
+	if (em1_requirement_active)
+	{
+		em1_requirement_active = false;
+		sl_power_manager_remove_em_requirement(SL_POWER_MANAGER_EM1);
+	}
+}
+
+// Busy-wait settle (field-validated behavior): keeps the SHDN -> electrode
+// enable interval deterministic instead of exposing it to sleeptimer jitter.
+static void delay_microseconds(uint32_t us)
+{
+	uint32_t ticks = (us * sl_sleeptimer_get_timer_frequency()) / 1000000;
+	uint32_t start_tick = sl_sleeptimer_get_tick_count();
+
+	while ((sl_sleeptimer_get_tick_count() - start_tick) < ticks)
+	{
+		// Do nothing, just wait
+	}
+}
+
+// Zero-current transition sequencing: the ADG1236 switches only open/close
+// while the DAC commands refVolts (zero Howland current), and the pulse edges
+// are produced by DAC steps into an already-connected load. This avoids
+// connecting a saturated open-circuit current source (onset transient) and
+// disconnecting mid-current (turn-off transient).
 static void enable_stimulation_output(void)
 {
 	float stimVolts = calcStimVolts();
+
 	GPIO_PinOutSet(SHDN_PORT, SHDN_PIN);
-	setTxBufferVolts(stimVolts);
-	sl_sleeptimer_start_timer(&timer_op_amp_settle, OP_AMP_INIT_TICKS,
-							  on_op_amp_settled, NULL, 0, 0);
-}
-
-static void on_op_amp_settled(sl_sleeptimer_timer_handle_t *handle, void *data)
-{
-	(void)handle;
-	(void)data;
-
+	// DAC is at refVolts here (zero current): give the amp a generous wake
+	// settle, connect the electrodes at zero, let the switch settle, then
+	// drive the pulse edge with the DAC step.
+	delay_microseconds(OP_AMP_WAKE_SETTLE_US);
 	GPIO_PinOutSet(ELEC0_OUT_PORT, ELEC0_OUT_PIN);
 	GPIO_PinOutSet(ELEC1_OUT_PORT, ELEC1_OUT_PIN);
+	delay_microseconds(SWITCH_CONNECT_SETTLE_US);
+	setTxBufferVolts(stimVolts);
 
 	uint32_t nonzero_pulse_duration =
 		(pulse_duration > STIM_OFFSET_US) ? (pulse_duration - STIM_OFFSET_US) : 0;
@@ -458,10 +514,15 @@ static void on_op_amp_settled(sl_sleeptimer_timer_handle_t *handle, void *data)
 
 static void disable_output(void)
 {
+	// Return to zero current while still connected, let the output settle,
+	// then disconnect and shut the amp down with the electrodes isolated.
+	setTxBufferVolts(refVolts);
+	delay_microseconds(SLEEP_TIMER_TICK_US);
 	GPIO_PinOutClear(ELEC0_OUT_PORT, ELEC0_OUT_PIN);
 	GPIO_PinOutClear(ELEC1_OUT_PORT, ELEC1_OUT_PIN);
+#if !STIM_HOLD_SHDN
 	GPIO_PinOutClear(SHDN_PORT, SHDN_PIN);
-	setTxBufferVolts(refVolts);
+#endif
 }
 
 static void on_charge_balance_timeout(sl_sleeptimer_timer_handle_t *handle,
@@ -502,7 +563,6 @@ static void on_burst_onset(void);
 static void stop_pulse_chain(void)
 {
 	sl_sleeptimer_stop_timer(&timer_stimulation);
-	sl_sleeptimer_stop_timer(&timer_op_amp_settle);
 	sl_sleeptimer_stop_timer(&timer_pulse);
 	sl_sleeptimer_stop_timer(&timer_charge_balance);
 }
@@ -526,15 +586,16 @@ static void on_burst_duration_end(sl_sleeptimer_timer_handle_t *handle, void *da
 	(void)handle;
 	(void)data;
 
-	stop_pulse_chain();
-	disable_output();
+	// Stop scheduling new pulses only; an in-flight pulse completes its own
+	// chain (pulse -> charge balance -> disable_output), preserving charge
+	// balance instead of truncating mid-phase.
+	sl_sleeptimer_stop_timer(&timer_stimulation);
 }
 
 static void on_burst_onset(void)
 {
 	sl_sleeptimer_stop_timer(&timer_burst_duration);
-	stop_pulse_chain();
-	disable_output();
+	sl_sleeptimer_stop_timer(&timer_stimulation);
 
 	if (intra_burst_freq_hz <= 0)
 	{
@@ -574,6 +635,7 @@ static void start_burst_cycle(void)
 
 void start_stimulation(void)
 {
+	stim_em1_acquire();
 	if (stim_mode == 0)
 	{
 		start_continuous_stimulation();
@@ -608,6 +670,9 @@ void stop_stimulation(void)
 	sl_sleeptimer_stop_timer(&timer_burst_duration);
 	stop_pulse_chain();
 	disable_output();
+	// End of train: amp always shuts down, regardless of STIM_HOLD_SHDN.
+	GPIO_PinOutClear(SHDN_PORT, SHDN_PIN);
+	stim_em1_release();
 }
 
 static void on_stimulation_timeout(sl_sleeptimer_timer_handle_t *handle,
@@ -1021,11 +1086,6 @@ static bool stim_chain_busy(void)
 {
 	bool running = false;
 
-	if (sl_sleeptimer_is_timer_running(&timer_op_amp_settle, &running) == SL_STATUS_OK
-		&& running)
-	{
-		return true;
-	}
 	if (sl_sleeptimer_is_timer_running(&timer_pulse, &running) == SL_STATUS_OK
 		&& running)
 	{

@@ -38,7 +38,10 @@
 
 // <o SL_SPIDRV_INST_BITRATE> SPI bitrate
 // <i> Default: 1000000
-#define SL_SPIDRV_INST_BITRATE           10000000
+// Reverted to the 1 MHz default: 10 MHz was likely introduced during project
+// reconstruction. The empirical stim offsets (STIM_OFFSET_US 93) are
+// consistent with the slower DAC write time of the field builds.
+#define SL_SPIDRV_INST_BITRATE           1000000
 
 // <o SL_SPIDRV_INST_FRAME_LENGTH> SPI frame length <4-16>
 // <i> Default: 8

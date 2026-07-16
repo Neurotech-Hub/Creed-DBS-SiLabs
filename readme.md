@@ -65,6 +65,39 @@ so the losses were invisible):
 stimulation does **not** stop pulse output — it only re-enables advertising and
 switches the LED to 1 Hz (10 s heartbeat halted).
 
+## Deterministic pulse chain (v0.5 / `FW5`)
+
+The stim waveform became jittery once true EM2 sleep was restored (`fecb67b`):
+every pulse involved four EM2 wake-ups (period tick, async op-amp settle, pulse
+end, charge-balance end), each adding variable HF-clock restart latency to a
+GPIO/DAC edge on the same order as the pulse phases. Field-tested units never
+truly slept, which is why they were clean. Fixes in v0.5:
+
+- **Synchronous op-amp settle** (field-validated behavior restored): SHDN high
+  -> DAC write -> ~120 µs busy-wait -> electrodes ON, in one callback. The
+  async `timer_op_amp_settle` hop was removed.
+- **EM1 held for the entire stim train** (`start_stimulation()` ->
+  `stop_stimulation()`), replicating the field units' timing environment
+  exactly — no sleeptimer edge in the pulse chain ever sees EM2 wake latency,
+  including pulse onsets. Costs ~+0.5 mA during active stim; EM2 still engages
+  when not stimulating, so idle power is unchanged. A tighter per-pulse EM1
+  window was tried first and was not sufficient; revisit windowing after the
+  waveform is bench-validated.
+- **Burst boundaries no longer truncate in-flight pulses**: burst-duration end
+  and burst onset stop only the periodic stim timer; an active pulse completes
+  its own chain (pulse -> charge balance -> output off), preserving charge
+  balance.
+- **Zero-current transition sequencing** (SHDN still cycles per pulse; holding
+  it for the whole train was tried and did not remove the transients): the
+  ADG1236 switches now open/close only while the DAC commands refVolts (zero
+  Howland current). Onset: SHDN high -> settle -> connect at zero -> DAC step
+  drives the pulse edge into a connected load. Turn-off: DAC back to refVolts
+  while connected -> brief settle -> disconnect -> SHDN low.
+
+Deferred optimization to revisit: a fully async settle (no busy-wait) would
+need a high-precision timer source that is immune to EM2 wake latency (e.g.,
+staying in EM1 with a HF timer, or PRS-driven edges).
+
 ### FUTURE: shelf mode
 
 Shelf mode (not implemented): radio off, LED off, zero advertising. A magnet
